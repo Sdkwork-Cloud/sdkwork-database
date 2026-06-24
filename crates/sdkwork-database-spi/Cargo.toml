@@ -1,0 +1,19 @@
+[package]
+name = "sdkwork-database-spi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "SDKWork database lifecycle SPI traits and registry contracts"
+
+[dependencies]
+async-trait.workspace = true
+regex = "1"
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml = "0.9"
+thiserror.workspace = true
+sdkwork-database-config = { path = "../sdkwork-database-config" }
+
+[dev-dependencies]
+tempfile.workspace = true

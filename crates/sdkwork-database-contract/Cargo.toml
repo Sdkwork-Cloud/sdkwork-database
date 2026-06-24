@@ -1,0 +1,16 @@
+[package]
+name = "sdkwork-database-contract"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Parse SDKWork database schema contracts and registries"
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+serde_yaml = "0.9"
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

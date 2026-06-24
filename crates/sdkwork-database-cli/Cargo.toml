@@ -1,0 +1,23 @@
+[package]
+name = "sdkwork-database-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "SDKWork database lifecycle CLI"
+
+[[bin]]
+name = "sdkwork-db"
+path = "src/main.rs"
+
+[dependencies]
+sdkwork-database-config = { path = "../sdkwork-database-config" }
+sdkwork-database-drift = { path = "../sdkwork-database-drift" }
+sdkwork-database-lifecycle = { path = "../sdkwork-database-lifecycle" }
+sdkwork-database-spi = { path = "../sdkwork-database-spi" }
+sdkwork-database-sqlx = { path = "../sdkwork-database-sqlx" }
+
+anyhow.workspace = true
+clap = { version = "4", features = ["derive", "env"] }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

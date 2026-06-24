@@ -1,0 +1,30 @@
+[package]
+name = "sdkwork-database-sqlx"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Sqlx-based database connection pool implementation for SDKWork"
+
+[dependencies]
+sdkwork-database-config = { path = "../sdkwork-database-config" }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Database
+sqlx = { workspace = true, features = ["sqlite", "postgres", "any"] }
+
+# Serialization
+serde = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tempfile = { workspace = true }

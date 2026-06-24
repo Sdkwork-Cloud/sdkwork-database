@@ -1,0 +1,27 @@
+[package]
+name = "sdkwork-database-lifecycle"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "SDKWork database lifecycle orchestration: migrate, seed, bootstrap"
+
+[dependencies]
+sdkwork-database-config = { path = "../sdkwork-database-config" }
+sdkwork-database-history = { path = "../sdkwork-database-history" }
+sdkwork-database-sqlx = { path = "../sdkwork-database-sqlx" }
+sdkwork-database-spi = { path = "../sdkwork-database-spi" }
+
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+sqlx = { workspace = true, features = ["sqlite", "postgres"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+sdkwork-database-config = { path = "../sdkwork-database-config" }
+sdkwork-database-sqlx = { path = "../sdkwork-database-sqlx" }

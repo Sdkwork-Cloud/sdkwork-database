@@ -1,0 +1,85 @@
+# SDKWork Database Configuration Example
+#
+# This file shows all available configuration options for sdkwork-database.
+# Copy this file and modify as needed for your service.
+
+[database]
+# Database engine: "sqlite" or "postgres"
+engine = "sqlite"
+
+# Database connection URL
+# SQLite: "sqlite:data.db" or "sqlite::memory:"
+# PostgreSQL: "postgres://user:password@host:port/database"
+url = "sqlite:data/app.db"
+
+# Deployment mode: "standalone" or "integrated"
+# - standalone: each service has its own database
+# - integrated: all services share one database with table prefixes
+mode = "standalone"
+
+# Table prefix for integrated mode
+# Only used when mode = "integrated"
+table_prefix = ""
+
+# Maximum number of connections in the pool
+max_connections = 16
+
+# Minimum number of idle connections
+min_connections = 1
+
+# Timeout for acquiring a connection (seconds)
+acquire_timeout_secs = 10
+
+# Timeout for idle connections (seconds)
+idle_timeout_secs = 300
+
+# Maximum lifetime of a connection (seconds)
+max_lifetime_secs = 1800
+
+# SQLite-specific configuration
+[database.sqlite]
+# Journal mode: "delete", "truncate", "persist", "memory", "wal", "off"
+# WAL mode is recommended for concurrent access
+journal_mode = "wal"
+
+# Busy timeout in seconds
+# How long to wait for a lock before returning SQLITE_BUSY
+busy_timeout_secs = 5
+
+# Enable foreign key constraints
+foreign_keys = true
+
+# Synchronous mode: "off", "normal", "full", "extra"
+# Normal is recommended for WAL mode
+synchronous = "normal"
+
+# Cache size in KB (negative value means KB, positive means pages)
+# -64000 = 64000 KB = ~62.5 MB
+# 64000 = 64000 pages = ~250 MB (4KB per page)
+cache_size_kb = -64000
+
+# Temp store location: "default", "file", "memory"
+temp_store = "memory"
+
+# Memory-mapped I/O size in bytes
+mmap_size_bytes = 268435456
+
+# PostgreSQL-specific configuration
+[database.postgres]
+# Statement cache capacity
+statement_cache_capacity = 100
+
+# Application name for pg_stat_activity
+application_name = "sdkwork-app"
+
+# SSL mode: "disable", "allow", "prefer", "require", "verify_ca", "verify_full"
+ssl_mode = "prefer"
+
+# Path to root CA certificate file (optional)
+# ssl_root_cert = "/path/to/ca.crt"
+
+# Path to client certificate file (optional, for mutual TLS)
+# ssl_client_cert = "/path/to/client.crt"
+
+# Path to client key file (optional, for mutual TLS)
+# ssl_client_key = "/path/to/client.key"

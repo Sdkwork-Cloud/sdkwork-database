@@ -1,0 +1,22 @@
+[package]
+name = "sdkwork-database-ops-http"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Axum routes for SDKWork database ops endpoints"
+
+[dependencies]
+axum = "0.7"
+sdkwork-database-ops = { path = "../sdkwork-database-ops" }
+sdkwork-database-spi = { path = "../sdkwork-database-spi" }
+sdkwork-database-sqlx = { path = "../sdkwork-database-sqlx" }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+sdkwork-database-config = { path = "../sdkwork-database-config" }
+sdkwork-database-lifecycle = { path = "../sdkwork-database-lifecycle" }
+sdkwork-database-sqlx = { path = "../sdkwork-database-sqlx" }

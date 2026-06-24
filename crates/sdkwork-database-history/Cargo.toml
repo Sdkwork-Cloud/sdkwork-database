@@ -1,0 +1,16 @@
+[package]
+name = "sdkwork-database-history"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "SDKWork database ops history tables and queries"
+
+[dependencies]
+sdkwork-database-config = { path = "../sdkwork-database-config" }
+sdkwork-database-sqlx = { path = "../sdkwork-database-sqlx" }
+
+hex = "0.4"
+sha2 = "0.10"
+sqlx = { workspace = true, features = ["sqlite", "postgres"] }
+thiserror.workspace = true
