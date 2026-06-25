@@ -152,6 +152,36 @@ fn resolve_postgres_database_url_from_split_fields() -> Result<Option<String>, C
 
 const DEFAULT_POSTGRES_SCHEMA: &str = "public";
 
+/// Append a PostgreSQL `options` query parameter so every pooled connection uses the unified schema.
+pub fn postgres_url_with_search_path(base_url: &str, service_prefix: &str) -> String {
+    let schema = resolve_unified_postgres_schema(service_prefix);
+    if schema == DEFAULT_POSTGRES_SCHEMA {
+        return base_url.to_string();
+    }
+
+    let option_value = format!("-c search_path={schema},public");
+    append_postgres_url_query_param(base_url, "options", &option_value)
+}
+
+fn append_postgres_url_query_param(base_url: &str, key: &str, value: &str) -> String {
+    let encoded_value = percent_encode_uri_component(value);
+    let separator = if base_url.contains('?') { '&' } else { '?' };
+    format!("{base_url}{separator}{key}={encoded_value}")
+}
+
+fn percent_encode_uri_component(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char);
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
+}
+
 /// Resolve the PostgreSQL schema used for application tables in the unified claw profile.
 pub fn resolve_unified_postgres_schema(service_prefix: &str) -> String {
     for key in [
@@ -267,6 +297,35 @@ mod tests {
             resolve_unified_postgres_schema("SDKWORK_IAM"),
             "sdkwork_ai_dev"
         );
+    }
+
+    #[test]
+    fn postgres_url_with_search_path_appends_options_for_non_public_schema() {
+        let _lock = lock_env_tests();
+        let _guard = EnvGuard::set(&[
+            ("SDKWORK_IAM_DATABASE_SCHEMA", None),
+            ("SDKWORK_CLAW_DATABASE_SCHEMA", Some("sdkwork_ai_dev")),
+            ("SDKWORK_DATABASE_SCHEMA", None),
+        ]);
+
+        let url = postgres_url_with_search_path(
+            "postgresql://sdkwork_ai_dev:sdkworkdev123@127.0.0.1:5432/sdkwork_ai_dev?sslmode=disable",
+            "SDKWORK_IAM",
+        );
+        assert!(url.contains("options=-c%20search_path%3Dsdkwork_ai_dev%2Cpublic"));
+    }
+
+    #[test]
+    fn postgres_url_with_search_path_leaves_public_schema_urls_unchanged() {
+        let _lock = lock_env_tests();
+        let _guard = EnvGuard::set(&[
+            ("SDKWORK_IAM_DATABASE_SCHEMA", None),
+            ("SDKWORK_CLAW_DATABASE_SCHEMA", None),
+            ("SDKWORK_DATABASE_SCHEMA", None),
+        ]);
+
+        let base = "postgresql://sdkwork_ai_dev:sdkworkdev123@127.0.0.1:5432/sdkwork_ai_dev";
+        assert_eq!(base, postgres_url_with_search_path(base, "SDKWORK_IAM").as_str());
     }
 
     #[test]

@@ -40,6 +40,12 @@ pub fn load_from_env(service_name: &str) -> Result<DatabaseConfig, ConfigError> 
         .or_else(|| DatabaseEngine::from_url(&url))
         .ok_or_else(|| ConfigError::InvalidUrl(format!("Cannot detect engine from URL: {url}")))?;
 
+    let url = if engine == DatabaseEngine::Postgres {
+        crate::claw_database::postgres_url_with_search_path(&url, &prefix)
+    } else {
+        url
+    };
+
     // Load deployment mode
     let mode = get_env_optional(&format!("{prefix}_DATABASE_MODE"))
         .and_then(|v| match v.to_lowercase().as_str() {
