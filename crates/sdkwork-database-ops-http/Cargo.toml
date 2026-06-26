@@ -7,7 +7,7 @@ license.workspace = true
 description = "Axum routes for SDKWork database ops endpoints"
 
 [dependencies]
-axum = "0.7"
+axum = "0.8"
 sdkwork-database-ops = { path = "../sdkwork-database-ops" }
 sdkwork-database-spi = { path = "../sdkwork-database-spi" }
 sdkwork-database-sqlx = { path = "../sdkwork-database-sqlx" }

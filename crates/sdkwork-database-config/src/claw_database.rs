@@ -1,6 +1,6 @@
 use crate::error::ConfigError;
 
-const DEFAULT_DEV_POSTGRES_HOST: &str = "[::1]";
+const DEFAULT_DEV_POSTGRES_HOST: &str = "127.0.0.1";
 const DEFAULT_DEV_POSTGRES_PORT: &str = "5432";
 const DEFAULT_DEV_POSTGRES_DATABASE: &str = "sdkwork_ai_dev";
 const DEFAULT_DEV_POSTGRES_USERNAME: &str = "sdkwork_ai_dev";
@@ -344,7 +344,7 @@ mod tests {
     fn default_dev_postgres_url_matches_claw_router_profile() {
         assert_eq!(
             default_claw_router_dev_postgres_database_url(),
-            "postgresql://sdkwork_ai_dev:sdkworkdev123@[::1]:5432/sdkwork_ai_dev?sslmode=disable"
+            "postgresql://sdkwork_ai_dev:sdkworkdev123@127.0.0.1:5432/sdkwork_ai_dev?sslmode=disable"
         );
     }
 

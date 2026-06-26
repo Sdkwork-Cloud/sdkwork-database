@@ -2,7 +2,7 @@ use std::env;
 
 use crate::database::{DatabaseConfig, DatabaseEngine, DeploymentMode};
 use crate::error::ConfigError;
-use crate::postgres::PostgresConfig;
+use crate::postgres::{PgSslMode, PostgresConfig};
 use crate::sqlite::SqliteConfig;
 
 /// Load database configuration from environment variables.
@@ -23,7 +23,7 @@ use crate::sqlite::SqliteConfig;
 /// - `DATABASE_URL` (legacy)
 /// - `SDKWORK_CLAW_DATABASE_URL`
 /// - `SDKWORK_CLAW_DATABASE_ENGINE/HOST/PORT/NAME/USERNAME/PASSWORD/SSL_MODE`
-/// - default local PostgreSQL development database (`sdkwork_ai_dev` on `[::1]:5432`)
+/// - default local PostgreSQL development database (`sdkwork_ai_dev` on `127.0.0.1:5432`)
 pub fn load_from_env(service_name: &str) -> Result<DatabaseConfig, ConfigError> {
     let prefix = format!("SDKWORK_{}", service_name.to_uppercase());
 
@@ -80,6 +80,9 @@ pub fn load_from_env(service_name: &str) -> Result<DatabaseConfig, ConfigError> 
     let idle_timeout_secs = get_env_as::<u64>(&format!("{}_DATABASE_IDLE_TIMEOUT", prefix), 300)?;
     let max_lifetime_secs = get_env_as::<u64>(&format!("{}_DATABASE_MAX_LIFETIME", prefix), 1800)?;
 
+    let mut postgres = PostgresConfig::default();
+    postgres.ssl_mode = resolve_postgres_ssl_mode(&prefix, &url);
+
     Ok(DatabaseConfig {
         engine,
         url,
@@ -91,8 +94,46 @@ pub fn load_from_env(service_name: &str) -> Result<DatabaseConfig, ConfigError> 
         idle_timeout_secs,
         max_lifetime_secs,
         sqlite: SqliteConfig::default(),
-        postgres: PostgresConfig::default(),
+        postgres,
     })
+}
+
+fn resolve_postgres_ssl_mode(service_prefix: &str, url: &str) -> PgSslMode {
+    for key in [
+        format!("{service_prefix}_DATABASE_SSL_MODE"),
+        "SDKWORK_CLAW_DATABASE_SSL_MODE".to_string(),
+    ] {
+        if let Some(value) = get_env_optional(&key) {
+            return parse_pg_ssl_mode(&value);
+        }
+    }
+    if let Some(mode) = parse_pg_ssl_mode_from_url(url) {
+        return mode;
+    }
+    PgSslMode::Prefer
+}
+
+fn parse_pg_ssl_mode(value: &str) -> PgSslMode {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "disable" => PgSslMode::Disable,
+        "allow" => PgSslMode::Allow,
+        "prefer" => PgSslMode::Prefer,
+        "require" => PgSslMode::Require,
+        "verify-ca" | "verify_ca" => PgSslMode::VerifyCa,
+        "verify-full" | "verify_full" => PgSslMode::VerifyFull,
+        _ => PgSslMode::Prefer,
+    }
+}
+
+fn parse_pg_ssl_mode_from_url(url: &str) -> Option<PgSslMode> {
+    let query = url.split('?').nth(1)?;
+    for pair in query.split('&') {
+        let (key, value) = pair.split_once('=')?;
+        if key.eq_ignore_ascii_case("sslmode") {
+            return Some(parse_pg_ssl_mode(value));
+        }
+    }
+    None
 }
 
 fn get_env_optional(key: &str) -> Option<String> {
@@ -213,6 +254,31 @@ mod tests {
 
         env::remove_var(url_key);
         env::remove_var(max_key);
+    }
+
+    #[test]
+    fn test_load_from_env_postgres_ssl_mode_from_env() {
+        let _lock = lock_env_tests();
+        let _guard = EnvGuard::set(&[
+            ("SDKWORK_PG_SSL_TEST_DATABASE_URL", Some("postgresql://127.0.0.1/test")),
+            ("SDKWORK_PG_SSL_TEST_DATABASE_SSL_MODE", Some("disable")),
+        ]);
+
+        let config = load_from_env("PG_SSL_TEST").unwrap();
+        assert_eq!(config.postgres.ssl_mode, PgSslMode::Disable);
+
+    }
+
+    #[test]
+    fn test_load_from_env_postgres_ssl_mode_from_url() {
+        let _lock = lock_env_tests();
+        let _guard = EnvGuard::set(&[(
+            "SDKWORK_PG_SSL_URL_TEST_DATABASE_URL",
+            Some("postgresql://127.0.0.1/test?sslmode=disable"),
+        )]);
+
+        let config = load_from_env("PG_SSL_URL_TEST").unwrap();
+        assert_eq!(config.postgres.ssl_mode, PgSslMode::Disable);
     }
 
     #[test]
