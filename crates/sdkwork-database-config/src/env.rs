@@ -18,7 +18,7 @@ use crate::sqlite::SqliteConfig;
 /// - `SDKWORK_{SERVICE}_DATABASE_IDLE_TIMEOUT` - idle timeout (seconds)
 /// - `SDKWORK_{SERVICE}_DATABASE_MAX_LIFETIME` - max lifetime (seconds)
 ///
-/// Falls back to the unified sdkwork-claw-router database profile:
+/// Falls back to the unified sdkwork-clawrouter database profile:
 /// - `SDKWORK_DATABASE_URL`
 /// - `DATABASE_URL` (legacy)
 /// - `SDKWORK_CLAW_DATABASE_URL`

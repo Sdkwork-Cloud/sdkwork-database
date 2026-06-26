@@ -34,7 +34,7 @@ fn percent_encode_path_segment(value: &str) -> String {
     percent_encode_component(value).replace("%2F", "/")
 }
 
-/// Build a PostgreSQL URL using the same field semantics as sdkwork-claw-router.
+/// Build a PostgreSQL URL using the same field semantics as sdkwork-clawrouter.
 pub fn build_postgres_database_url(
     host: &str,
     port: Option<&str>,
@@ -69,7 +69,7 @@ pub fn build_postgres_database_url(
     }
 }
 
-/// Default local PostgreSQL development URL aligned with sdkwork-claw-router.
+/// Default local PostgreSQL development URL aligned with sdkwork-clawrouter.
 pub fn default_claw_router_dev_postgres_database_url() -> String {
     build_postgres_database_url(
         DEFAULT_DEV_POSTGRES_HOST,
@@ -196,7 +196,7 @@ pub fn resolve_unified_postgres_schema(service_prefix: &str) -> String {
     DEFAULT_POSTGRES_SCHEMA.to_string()
 }
 
-/// Resolve the canonical sdkwork-claw-router PostgreSQL URL from process env.
+/// Resolve the canonical sdkwork-clawrouter PostgreSQL URL from process env.
 pub fn resolve_claw_router_database_url_from_env() -> Result<Option<String>, ConfigError> {
     if let Some(url) = env_optional("SDKWORK_CLAW_DATABASE_URL") {
         return Ok(Some(url));
@@ -204,7 +204,7 @@ pub fn resolve_claw_router_database_url_from_env() -> Result<Option<String>, Con
     resolve_postgres_database_url_from_split_fields()
 }
 
-/// Resolve the unified SDKWork database URL for any service, aligned with sdkwork-claw-router.
+/// Resolve the unified SDKWork database URL for any service, aligned with sdkwork-clawrouter.
 pub fn resolve_unified_database_url(service_prefix: &str) -> Result<String, ConfigError> {
     let direct_keys = [
         format!("{service_prefix}_DATABASE_URL"),
