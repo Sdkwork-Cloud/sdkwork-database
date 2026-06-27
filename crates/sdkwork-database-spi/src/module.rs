@@ -65,7 +65,12 @@ impl DatabaseModuleDescriptorProvider for DefaultDatabaseModule {
         DatabaseModuleDescriptor {
             module_id: self.manifest.module_id.clone(),
             service_code: self.manifest.service_code.clone(),
-            table_prefix: self.manifest.table_prefix.clone(),
+            table_prefix: self
+                .manifest
+                .table_prefixes
+                .first()
+                .cloned()
+                .unwrap_or_default(),
             supported_engines: parse_manifest_engines(&self.manifest),
         }
     }

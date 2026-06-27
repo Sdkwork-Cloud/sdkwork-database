@@ -1465,6 +1465,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "sdkwork-database-id"
+version = "0.1.0"
+dependencies = [
+ "sdkwork-database-config",
+ "sdkwork-database-sqlx",
+ "sdkwork-id-core",
+ "sqlx",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "sdkwork-database-lifecycle"
 version = "0.1.0"
 dependencies = [
@@ -1524,8 +1536,8 @@ dependencies = [
  "chrono",
  "paste",
  "sdkwork-database-config",
+ "sdkwork-database-id",
  "sdkwork-database-sqlx",
- "sdkwork-id-core",
  "serde",
  "serde_json",
  "sqlx",

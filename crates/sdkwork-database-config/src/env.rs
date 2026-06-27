@@ -260,13 +260,15 @@ mod tests {
     fn test_load_from_env_postgres_ssl_mode_from_env() {
         let _lock = lock_env_tests();
         let _guard = EnvGuard::set(&[
-            ("SDKWORK_PG_SSL_TEST_DATABASE_URL", Some("postgresql://127.0.0.1/test")),
+            (
+                "SDKWORK_PG_SSL_TEST_DATABASE_URL",
+                Some("postgresql://127.0.0.1/test"),
+            ),
             ("SDKWORK_PG_SSL_TEST_DATABASE_SSL_MODE", Some("disable")),
         ]);
 
         let config = load_from_env("PG_SSL_TEST").unwrap();
         assert_eq!(config.postgres.ssl_mode, PgSslMode::Disable);
-
     }
 
     #[test]

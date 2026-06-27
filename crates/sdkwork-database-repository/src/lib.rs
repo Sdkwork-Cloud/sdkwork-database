@@ -51,7 +51,7 @@ pub use query::Query;
 pub use repository::Repository;
 
 // Re-export IdGenerator from sdkwork-id-core for use in macros
-pub use sdkwork_id_core::IdGenerator;
+pub use sdkwork_database_id::IdGenerator;
 
 /// Prelude module for convenient imports
 pub mod prelude {
@@ -63,6 +63,6 @@ pub mod prelude {
     pub use crate::query::Query;
     pub use crate::repository::Repository;
     pub use crate::IdGenerator;
-    pub use sdkwork_id_core::{SnowflakeIdGenerator, UuidIdGenerator};
+    pub use sdkwork_database_id::{SnowflakeIdGenerator, UuidIdGenerator};
     pub use serde::{Deserialize, Serialize};
 }

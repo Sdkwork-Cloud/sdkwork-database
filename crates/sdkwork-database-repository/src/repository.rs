@@ -60,7 +60,7 @@ pub trait Repository<E: Entity>: Send + Sync {
     /// Override this to provide a custom ID generator. By default, returns None.
     /// When insert is called and the entity's ID is 0, the repository will
     /// generate a new ID using the Snowflake algorithm.
-    fn id_generator(&self) -> Option<&dyn sdkwork_id_core::IdGenerator> {
+    fn id_generator(&self) -> Option<&dyn sdkwork_database_id::IdGenerator> {
         None
     }
 
@@ -213,14 +213,14 @@ macro_rules! impl_repository {
 
                 /// Create a new repository with a Snowflake ID generator.
                 pub fn with_snowflake(pool: sdkwork_database_sqlx::DatabasePool, node_id: u16) -> Result<Self, $crate::error::RepositoryError> {
-                    let gen = sdkwork_id_core::SnowflakeIdGenerator::new(node_id)
+                    let gen = sdkwork_database_id::SnowflakeIdGenerator::new(node_id)
                         .map_err(|e| $crate::error::RepositoryError::IdGeneration(e.to_string()))?;
                     Ok(Self { pool, id_gen: Some(std::sync::Arc::new(gen)) })
                 }
 
                 /// Create a new repository with a UUID ID generator.
                 pub fn with_uuid(pool: sdkwork_database_sqlx::DatabasePool, prefix: &str) -> Self {
-                    let gen = sdkwork_id_core::UuidIdGenerator::new(prefix);
+                    let gen = sdkwork_database_id::UuidIdGenerator::new(prefix);
                     Self { pool, id_gen: Some(std::sync::Arc::new(gen)) }
                 }
 

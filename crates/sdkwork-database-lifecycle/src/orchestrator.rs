@@ -2,9 +2,9 @@ use std::time::Instant;
 
 use sdkwork_database_config::claw_database::resolve_unified_postgres_schema;
 use sdkwork_database_history::{
-    ensure_history_tables, execute_sql_script, fetch_installation_state, file_checksum, is_seed_applied,
-    list_applied_migration_versions, migration_checksum, record_migration, record_seed,
-    upsert_installation_state,
+    ensure_history_tables, execute_sql_script, fetch_installation_state, file_checksum,
+    is_seed_applied, list_applied_migration_versions, migration_checksum, record_migration,
+    record_seed, upsert_installation_state,
 };
 use sdkwork_database_spi::{
     types::{
@@ -340,7 +340,9 @@ impl LifecycleOrchestrator {
     async fn baseline_anchor_table_present(&self) -> Result<bool, LifecycleError> {
         use sdkwork_database_sqlx::DatabasePool;
 
-        let schema = resolve_unified_postgres_schema("SDKWORK_CLAW");
+        let descriptor = self.module.descriptor();
+        let service_prefix = format!("SDKWORK_{}", descriptor.service_code.to_uppercase());
+        let schema = resolve_unified_postgres_schema(&service_prefix);
         let query = r#"
             SELECT EXISTS (
                 SELECT 1

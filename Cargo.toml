@@ -10,6 +10,7 @@ members = [
     "crates/sdkwork-database-drift",
     "crates/sdkwork-database-ops",
     "crates/sdkwork-database-ops-http",
+    "crates/sdkwork-database-id",
     "crates/sdkwork-database-cli",
 ]
 resolver = "2"
@@ -52,4 +53,5 @@ tempfile = "3"
 assert_matches = "1"
 
 # ID generation
+sdkwork-database-id = { path = "crates/sdkwork-database-id" }
 sdkwork-id-core = { path = "../sdkwork-id/crates/sdkwork-id-core" }

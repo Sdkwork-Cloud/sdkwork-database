@@ -1,38 +1,29 @@
 [package]
-name = "sdkwork-database-repository"
+name = "sdkwork-database-id"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Unified repository pattern abstraction for SDKWork database operations"
+description = "Database-backed Snowflake node_id allocation and unified ID generation for SDKWork services."
+
+[lib]
+name = "sdkwork_database_id"
+path = "src/lib.rs"
 
 [dependencies]
+sdkwork-id-core = { workspace = true }
 sdkwork-database-config = { path = "../sdkwork-database-config" }
 sdkwork-database-sqlx = { path = "../sdkwork-database-sqlx" }
-sdkwork-database-id = { workspace = true }
 
 # Async runtime
 tokio = { workspace = true }
-async-trait = { workspace = true }
 
 # Database
 sqlx = { workspace = true, features = ["sqlite", "postgres"] }
 
-# Serialization
-serde = { workspace = true }
-serde_json = { workspace = true }
-
-# Error handling
-thiserror = { workspace = true }
-
 # Logging
 tracing = { workspace = true }
-
-# Utilities
-chrono = { workspace = true }
-uuid = { workspace = true }
-paste = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

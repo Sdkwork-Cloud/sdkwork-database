@@ -325,7 +325,10 @@ mod tests {
         ]);
 
         let base = "postgresql://sdkwork_ai_dev:sdkworkdev123@127.0.0.1:5432/sdkwork_ai_dev";
-        assert_eq!(base, postgres_url_with_search_path(base, "SDKWORK_IAM").as_str());
+        assert_eq!(
+            base,
+            postgres_url_with_search_path(base, "SDKWORK_IAM").as_str()
+        );
     }
 
     #[test]

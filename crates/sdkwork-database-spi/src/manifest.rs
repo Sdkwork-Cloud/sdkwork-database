@@ -11,8 +11,17 @@ pub struct DatabaseManifest {
     pub module_id: String,
     #[serde(rename = "serviceCode")]
     pub service_code: String,
-    #[serde(rename = "tablePrefix")]
-    pub table_prefix: String,
+    /// Canonical table prefixes declared by the module. Accepts the
+    /// `tablePrefixes` array form as well as the legacy singular `tablePrefix`
+    /// string (normalized into a one-element vector) so existing module
+    /// manifests keep deserializing without a breaking cutover.
+    #[serde(
+        rename = "tablePrefixes",
+        alias = "tablePrefix",
+        default,
+        deserialize_with = "deserialize_table_prefixes"
+    )]
+    pub table_prefixes: Vec<String>,
     #[serde(rename = "contractVersion")]
     pub contract_version: String,
     #[serde(default)]
@@ -89,6 +98,29 @@ fn default_drift_interval() -> u64 {
     60
 }
 
+/// Deserializes the module table-prefix declaration accepting either the
+/// canonical `tablePrefixes` array or the legacy singular `tablePrefix`
+/// string. A legacy single string is normalized into a one-element vector so
+/// the manifest contract stays backward compatible with modules that still
+/// declare a single prefix. A missing field yields an empty vector via the
+/// struct-level `default` attribute.
+fn deserialize_table_prefixes<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum PrefixValue {
+        Single(String),
+        Many(Vec<String>),
+    }
+
+    Ok(match PrefixValue::deserialize(deserializer)? {
+        PrefixValue::Single(value) => vec![value],
+        PrefixValue::Many(values) => values,
+    })
+}
+
 impl DatabaseManifest {
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self, crate::SpiError> {
         let content = std::fs::read_to_string(path.as_ref()).map_err(|error| {
@@ -110,5 +142,48 @@ mod tests {
     #[test]
     fn default_seed_locale_is_zh_cn() {
         assert_eq!(default_seed_locale(), "zh-CN");
+    }
+
+    fn manifest_base_json() -> &'static str {
+        r#"{
+            "schemaVersion": 1,
+            "kind": "sdkwork.database.module",
+            "moduleId": "demo",
+            "serviceCode": "DEMO",
+            "contractVersion": "1.0.0",
+            "paths": {
+                "contract": "contract/schema.yaml",
+                "migrations": "migrations",
+                "seeds": "seeds",
+                "driftPolicy": "drift/policy.yaml"
+            }
+        }"#
+    }
+
+    #[test]
+    fn manifest_reads_table_prefixes_array() {
+        let json = manifest_base_json().replace(
+            "\"contractVersion\": \"1.0.0\",",
+            "\"contractVersion\": \"1.0.0\",\n            \"tablePrefixes\": [\"ai_\", \"ops_\"],",
+        );
+        let manifest: DatabaseManifest = serde_json::from_str(&json).expect("parse manifest");
+        assert_eq!(manifest.table_prefixes, vec!["ai_", "ops_"]);
+    }
+
+    #[test]
+    fn manifest_reads_legacy_singular_table_prefix_string() {
+        let json = manifest_base_json().replace(
+            "\"contractVersion\": \"1.0.0\",",
+            "\"contractVersion\": \"1.0.0\",\n            \"tablePrefix\": \"iam_\",",
+        );
+        let manifest: DatabaseManifest = serde_json::from_str(&json).expect("parse manifest");
+        assert_eq!(manifest.table_prefixes, vec!["iam_"]);
+    }
+
+    #[test]
+    fn manifest_defaults_table_prefixes_when_absent() {
+        let manifest: DatabaseManifest =
+            serde_json::from_str(manifest_base_json()).expect("parse manifest");
+        assert!(manifest.table_prefixes.is_empty());
     }
 }
