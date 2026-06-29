@@ -388,7 +388,8 @@ macro_rules! impl_repository {
 
                 async fn find_all(&self, query: &$crate::query::Query) -> Result<Vec<$entity>, $crate::error::RepositoryError> {
                     let table = <$entity as $crate::entity::Entity>::table_name();
-                    let (where_clause, params) = query.to_sql();
+                    let (where_clause, params) = query.to_sql()
+                        .map_err(|e| $crate::error::RepositoryError::QueryValidation(e.to_string()))?;
                     let sql = format!("SELECT * FROM {} {}", table, where_clause);
 
                     match &self.pool {
@@ -535,7 +536,8 @@ macro_rules! impl_repository {
 
                 async fn count(&self, query: &$crate::query::Query) -> Result<i64, $crate::error::RepositoryError> {
                     let table = <$entity as $crate::entity::Entity>::table_name();
-                    let (where_clause, params) = query.to_sql();
+                    let (where_clause, params) = query.to_sql()
+                        .map_err(|e| $crate::error::RepositoryError::QueryValidation(e.to_string()))?;
                     let sql = format!("SELECT COUNT(*) as count FROM {} {}", table, where_clause);
 
                     match &self.pool {

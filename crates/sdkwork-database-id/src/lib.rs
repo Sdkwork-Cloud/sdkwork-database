@@ -13,10 +13,10 @@
 //!
 //! ```rust,no_run
 //! # use sdkwork_database_id::SnowflakeNodeAllocator;
-//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! # async fn example() -> Result<(), sdkwork_database_id::NodeAllocatorError> {
 //! let (generator, _lease) =
 //!     SnowflakeNodeAllocator::allocate_generator_from_env("my-service", "MEMORY").await?;
-//! let id = generator.generate()?;
+//! let id = generator.generate().map_err(|e| sdkwork_database_id::NodeAllocatorError::Snowflake(e))?;
 //! # Ok(())
 //! # }
 //! ```

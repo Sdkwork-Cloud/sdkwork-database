@@ -74,7 +74,7 @@ impl HealthChecker {
                 sqlx::query("SELECT 1")
                     .execute(pool)
                     .await
-                    .map_err(|e| RepositoryError::Database(e))?;
+                    .map_err(RepositoryError::Database)?;
                 start.elapsed()
             }
             sdkwork_database_sqlx::DatabasePool::Postgres(pool, _) => {
@@ -82,7 +82,7 @@ impl HealthChecker {
                 sqlx::query("SELECT 1")
                     .execute(pool)
                     .await
-                    .map_err(|e| RepositoryError::Database(e))?;
+                    .map_err(RepositoryError::Database)?;
                 start.elapsed()
             }
         };
@@ -125,7 +125,7 @@ impl HealthChecker {
     pub async fn is_healthy(&self) -> bool {
         self.check()
             .await
-            .map_or(false, |r| r.status == HealthStatus::Healthy)
+            .is_ok_and(|r| r.status == HealthStatus::Healthy)
     }
 }
 

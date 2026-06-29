@@ -482,6 +482,7 @@ fn find_first_available(active_ids: &[u16]) -> Option<u16> {
 }
 
 /// Try to INSERT a new lease. Returns `true` if inserted, `false` on conflict.
+#[allow(clippy::too_many_arguments)]
 async fn try_insert(
     pool: &DatabasePool,
     node_id: u16,

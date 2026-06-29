@@ -49,5 +49,6 @@ pub use builder::PoolBuilder;
 pub use error::PoolError;
 pub use pool::{
     create_any_pool_from_config, create_any_pool_from_env, create_pool_from_config,
-    create_pool_from_env, create_pool_from_toml, DatabasePool, PoolContext,
+    create_pool_from_env, create_pool_from_toml, DatabasePool, PoolContext, PoolHealth,
+    PoolHealthStatus,
 };

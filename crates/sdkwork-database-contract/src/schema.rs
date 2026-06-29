@@ -1,5 +1,6 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
+use std::sync::RwLock;
 
 use serde::Deserialize;
 
@@ -388,4 +389,155 @@ fn default_module_id() -> String {
 
 fn default_contract_version() -> String {
     "0.1.0".to_string()
+}
+
+/// Contract analyzer with caching support.
+///
+/// This struct caches parsed schema contracts to avoid repeated file I/O
+/// and YAML parsing during drift checks. The cache uses file path as key
+/// and stores the parsed contract along with its modification time.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use sdkwork_database_contract::ContractAnalyzer;
+/// use std::path::Path;
+///
+/// let analyzer = ContractAnalyzer::new();
+/// let contract = analyzer.load_contract(Path::new("contract/schema.yaml")).unwrap();
+///
+/// // Subsequent calls will use cached version if file hasn't changed
+/// let contract2 = analyzer.load_contract(Path::new("contract/schema.yaml")).unwrap();
+/// ```
+pub struct ContractAnalyzer {
+    cache: RwLock<HashMap<String, CachedContract>>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedContract {
+    contract: SchemaContract,
+    tables: Vec<String>,
+    columns: BTreeMap<String, Vec<String>>,
+    modification_time: std::time::SystemTime,
+}
+
+impl ContractAnalyzer {
+    /// Create a new contract analyzer with an empty cache.
+    pub fn new() -> Self {
+        Self {
+            cache: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Load a schema contract with caching.
+    ///
+    /// If the contract was previously loaded and the file hasn't been modified,
+    /// returns the cached version. Otherwise, parses and caches the new version.
+    pub fn load_contract(&self, contract_path: &Path) -> Result<SchemaContract, ContractError> {
+        let path_key = contract_path.to_string_lossy().to_string();
+
+        // Check if file exists and get modification time
+        let metadata = std::fs::metadata(contract_path)
+            .map_err(|e| ContractError::Io(format!("failed to read contract metadata: {}", e)))?;
+        let mod_time = metadata
+            .modified()
+            .map_err(|e| ContractError::Io(format!("failed to get modification time: {}", e)))?;
+
+        // Check cache
+        {
+            let cache = self.cache.read().unwrap();
+            if let Some(cached) = cache.get(&path_key) {
+                if cached.modification_time == mod_time {
+                    return Ok(cached.contract.clone());
+                }
+            }
+        }
+
+        // Load and parse contract
+        let contract = SchemaContract::from_file(contract_path)?;
+        let tables = contract.expected_table_names();
+        let columns = contract.expected_columns_by_table();
+
+        // Update cache
+        {
+            let mut cache = self.cache.write().unwrap();
+            cache.insert(
+                path_key,
+                CachedContract {
+                    contract: contract.clone(),
+                    tables,
+                    columns,
+                    modification_time: mod_time,
+                },
+            );
+        }
+
+        Ok(contract)
+    }
+
+    /// Get expected tables from cached contract.
+    pub fn expected_tables(&self, contract_path: &Path) -> Result<Vec<String>, ContractError> {
+        let path_key = contract_path.to_string_lossy().to_string();
+
+        {
+            let cache = self.cache.read().unwrap();
+            if let Some(cached) = cache.get(&path_key) {
+                return Ok(cached.tables.clone());
+            }
+        }
+
+        // Load if not cached
+        self.load_contract(contract_path)?;
+
+        {
+            let cache = self.cache.read().unwrap();
+            Ok(cache
+                .get(&path_key)
+                .map(|c| c.tables.clone())
+                .unwrap_or_default())
+        }
+    }
+
+    /// Get expected columns from cached contract.
+    pub fn expected_columns(
+        &self,
+        contract_path: &Path,
+    ) -> Result<BTreeMap<String, Vec<String>>, ContractError> {
+        let path_key = contract_path.to_string_lossy().to_string();
+
+        {
+            let cache = self.cache.read().unwrap();
+            if let Some(cached) = cache.get(&path_key) {
+                return Ok(cached.columns.clone());
+            }
+        }
+
+        // Load if not cached
+        self.load_contract(contract_path)?;
+
+        {
+            let cache = self.cache.read().unwrap();
+            Ok(cache
+                .get(&path_key)
+                .map(|c| c.columns.clone())
+                .unwrap_or_default())
+        }
+    }
+
+    /// Clear the cache.
+    pub fn clear_cache(&self) {
+        let mut cache = self.cache.write().unwrap();
+        cache.clear();
+    }
+
+    /// Get cache size for monitoring.
+    pub fn cache_size(&self) -> usize {
+        self.cache.read().unwrap().len()
+    }
+}
+
+impl Default for ContractAnalyzer {
+    fn default() -> Self {
+        Self::new()
+    }
 }

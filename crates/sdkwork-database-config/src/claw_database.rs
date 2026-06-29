@@ -242,16 +242,8 @@ pub fn resolve_unified_max_connections(service_prefix: &str) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::env;
-    use std::sync::{LazyLock, Mutex};
-
-    static ENV_TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
-
-    fn lock_env_tests() -> std::sync::MutexGuard<'static, ()> {
-        ENV_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-    }
 
     struct EnvGuard {
         previous: Vec<(String, Option<String>)>,
@@ -285,8 +277,8 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn resolves_unified_postgres_schema_from_claw_profile() {
-        let _lock = lock_env_tests();
         let _guard = EnvGuard::set(&[
             ("SDKWORK_IAM_DATABASE_SCHEMA", None),
             ("SDKWORK_CLAW_DATABASE_SCHEMA", Some("sdkwork_ai_dev")),
@@ -300,8 +292,8 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn postgres_url_with_search_path_appends_options_for_non_public_schema() {
-        let _lock = lock_env_tests();
         let _guard = EnvGuard::set(&[
             ("SDKWORK_IAM_DATABASE_SCHEMA", None),
             ("SDKWORK_CLAW_DATABASE_SCHEMA", Some("sdkwork_ai_dev")),
@@ -316,8 +308,8 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn postgres_url_with_search_path_leaves_public_schema_urls_unchanged() {
-        let _lock = lock_env_tests();
         let _guard = EnvGuard::set(&[
             ("SDKWORK_IAM_DATABASE_SCHEMA", None),
             ("SDKWORK_CLAW_DATABASE_SCHEMA", None),
@@ -332,8 +324,8 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn resolves_unified_postgres_schema_defaults_to_public() {
-        let _lock = lock_env_tests();
         let _guard = EnvGuard::set(&[
             ("SDKWORK_IAM_DATABASE_SCHEMA", None),
             ("SDKWORK_CLAW_DATABASE_SCHEMA", None),
@@ -352,8 +344,8 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn resolves_split_claw_fields_into_database_url() {
-        let _lock = lock_env_tests();
         let _guard = EnvGuard::set(&[
             ("SDKWORK_SPLITTEST_DATABASE_URL", None),
             ("SDKWORK_DATABASE_URL", None),
@@ -376,8 +368,8 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_service_specific_url_takes_precedence_over_claw_defaults() {
-        let _lock = lock_env_tests();
         let _guard = EnvGuard::set(&[
             (
                 "SDKWORK_PRECEDENCE_DATABASE_URL",

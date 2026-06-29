@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::time::Duration;
 
 use crate::postgres::PostgresConfig;
@@ -10,6 +11,15 @@ use crate::sqlite::SqliteConfig;
 pub enum DatabaseEngine {
     Sqlite,
     Postgres,
+}
+
+impl fmt::Display for DatabaseEngine {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DatabaseEngine::Sqlite => write!(f, "sqlite"),
+            DatabaseEngine::Postgres => write!(f, "postgres"),
+        }
+    }
 }
 
 impl DatabaseEngine {

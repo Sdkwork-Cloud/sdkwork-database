@@ -35,8 +35,15 @@ pub struct DatabaseManifest {
     pub engines: Vec<String>,
     #[serde(rename = "defaultEngine", default)]
     pub default_engine: Option<String>,
+    /// Baseline strategy: "migrations-only" (default), "baseline-if-empty", or "force-baseline".
     #[serde(rename = "baselineStrategy", default)]
     pub baseline_strategy: Option<String>,
+    /// Anchor table name to check before applying baseline.
+    /// If set, baseline is skipped when this table already exists.
+    /// Example: "iam_tenant", "core_user", etc.
+    /// If not set, defaults to "{first_prefix}tenant" if prefixes exist.
+    #[serde(rename = "baselineAnchorTable", default)]
+    pub baseline_anchor_table: Option<String>,
     #[serde(default)]
     pub modules: Vec<String>,
     #[serde(default)]

@@ -3,7 +3,9 @@ use sdkwork_database_contract::{
     load_expected_column_required, load_expected_column_types, load_expected_columns,
     load_expected_constraints, load_expected_indexes, load_expected_tables, physical_type_matches,
 };
-use sdkwork_database_history::{list_applied_migration_versions, migration_checksum};
+use sdkwork_database_history::{
+    file_checksum, list_applied_migration_versions, migration_checksum,
+};
 use sdkwork_database_spi::types::DriftPolicy;
 use sdkwork_database_sqlx::DatabasePool;
 use serde::{Deserialize, Serialize};
@@ -15,6 +17,14 @@ use crate::introspect::{
     introspect_table_indexes, introspect_tables,
 };
 
+/// Known framework history tables that are excluded from drift extra-table detection.
+const FRAMEWORK_HISTORY_TABLES: &[&str] = &[
+    "ops_schema_migration_history",
+    "ops_seed_history",
+    "ops_database_installation_state",
+];
+
+/// Drift report — the top-level result of a drift analysis.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DriftReport {
     pub schema_version: u32,
@@ -31,6 +41,7 @@ pub struct DriftReport {
     pub diffs: Vec<DriftDiff>,
 }
 
+/// Aggregated drift summary counts by severity.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DriftSummary {
     pub error: u32,
@@ -38,6 +49,7 @@ pub struct DriftSummary {
     pub info: u32,
 }
 
+/// A single drift difference entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DriftDiff {
     pub code: String,
@@ -45,6 +57,7 @@ pub struct DriftDiff {
     pub message: String,
 }
 
+/// Engine that compares expected schema (contract) against live database schema.
 pub struct DriftEngine {
     pool: DatabasePool,
     module: std::sync::Arc<dyn sdkwork_database_spi::DatabaseModule>,
@@ -58,20 +71,24 @@ impl DriftEngine {
         Self { pool, module }
     }
 
+    /// Run full drift analysis: migrations, checksums, tables, columns, types,
+    /// nullability, indexes, and constraints.
     pub async fn analyze(&self) -> Result<DriftReport, DriftError> {
         let descriptor = self.module.descriptor();
         let engine = self.pool.engine();
         let policy = self.module.load_policy().await?;
+        let contract_path = self.module.contract_path();
+        let contract_exists = contract_path.exists();
+
+        // ── Migration drift ──────────────────────────────────────────────
         let migrations = self.module.list_migrations(engine).await?;
         let applied =
             list_applied_migration_versions(&self.pool, &descriptor.module_id, engine).await?;
 
+        let known_versions: Vec<String> = migrations.iter().map(|m| m.version.clone()).collect();
+
         let mut pending_migrations = Vec::new();
         let mut diffs = Vec::new();
-        let known_versions = migrations
-            .iter()
-            .map(|migration| migration.version.clone())
-            .collect::<Vec<_>>();
 
         for migration in &migrations {
             let id = format!("{}_{}", migration.version, migration.name);
@@ -85,7 +102,7 @@ impl DriftEngine {
                 continue;
             }
 
-            let checksum = sdkwork_database_history::file_checksum(&migration.up_path)?;
+            let checksum = file_checksum(&migration.up_path)?;
             if let Some(existing) = migration_checksum(
                 &self.pool,
                 &descriptor.module_id,
@@ -108,7 +125,7 @@ impl DriftEngine {
         }
 
         for version in &applied {
-            if !known_versions.iter().any(|known| known == version) {
+            if !known_versions.iter().any(|v| v == version) {
                 diffs.push(DriftDiff {
                     code: "migration_unknown".to_string(),
                     severity: severity_for("migration_unknown", &policy),
@@ -117,23 +134,22 @@ impl DriftEngine {
             }
         }
 
+        // ── Table drift ─────────────────────────────────────────────────
         let live_tables = introspect_tables(&self.pool).await?;
-        let contract_path = self.module.contract_path();
-        let table_registry_path = contract_path
-            .parent()
-            .map(|dir| dir.join("table-registry.json"))
-            .unwrap_or_default();
-        let expected_tables = if contract_path.exists() {
+        let expected_tables = if contract_exists {
+            // contract_path.parent() is guaranteed Some since contract_path always has a parent
+            let registry_dir = contract_path.parent().unwrap();
+            let table_registry_path = registry_dir.join("table-registry.json");
             load_expected_tables(&contract_path, &table_registry_path)?
         } else {
             Vec::new()
         };
 
         for expected in &expected_tables {
-            if policy.ignore_tables.iter().any(|item| item == expected) {
+            if policy.ignore_tables.iter().any(|t| t == expected) {
                 continue;
             }
-            if !live_tables.iter().any(|table| table == expected) {
+            if !live_tables.iter().any(|t| t == expected) {
                 diffs.push(DriftDiff {
                     code: "missing_table".to_string(),
                     severity: severity_for("missing_table", &policy),
@@ -143,10 +159,10 @@ impl DriftEngine {
         }
 
         for live in &live_tables {
-            if is_ignored_ops_table(live) || policy.ignore_tables.iter().any(|item| item == live) {
+            if is_framework_table(live) || policy.ignore_tables.iter().any(|t| t == live) {
                 continue;
             }
-            if !expected_tables.is_empty() && !expected_tables.iter().any(|table| table == live) {
+            if !expected_tables.is_empty() && !expected_tables.iter().any(|t| t == live) {
                 diffs.push(DriftDiff {
                     code: "extra_table".to_string(),
                     severity: severity_for("extra_table", &policy),
@@ -155,31 +171,33 @@ impl DriftEngine {
             }
         }
 
-        if contract_path.exists() {
+        // ── Column / type / nullability drift ───────────────────────────
+        if contract_exists {
             let expected_columns = load_expected_columns(&contract_path)?;
             let expected_column_types = load_expected_column_types(&contract_path)?;
             let expected_column_required = load_expected_column_required(&contract_path)?;
             let expected_indexes = load_expected_indexes(&contract_path)?;
             let expected_constraints = load_expected_constraints(&contract_path)?;
+
             if !expected_columns.is_empty() || !expected_column_types.is_empty() {
                 let live_column_details = introspect_table_column_details(&self.pool).await?;
+
                 for (table_name, expected) in expected_columns {
-                    if policy.ignore_tables.iter().any(|item| item == &table_name) {
+                    if policy.ignore_tables.iter().any(|t| t == &table_name) {
                         continue;
                     }
                     let live = live_column_details
                         .get(&table_name)
                         .cloned()
                         .unwrap_or_default();
-                    let live_names = live
-                        .iter()
-                        .map(|column| column.name.clone())
-                        .collect::<Vec<_>>();
+                    let live_names: Vec<String> = live.iter().map(|c| c.name.clone()).collect();
+
+                    // missing columns
                     for column in &expected {
-                        if policy.ignore_columns.iter().any(|item| item == column) {
+                        if policy.ignore_columns.iter().any(|c| c == column) {
                             continue;
                         }
-                        if !live_names.iter().any(|name| name == column) {
+                        if !live_names.iter().any(|n| n == column) {
                             diffs.push(DriftDiff {
                                 code: "missing_column".to_string(),
                                 severity: severity_for("missing_column", &policy),
@@ -187,15 +205,13 @@ impl DriftEngine {
                             });
                         }
                     }
-                    for column in live {
-                        if policy
-                            .ignore_columns
-                            .iter()
-                            .any(|item| item == &column.name)
-                        {
+
+                    // extra / type / nullability mismatches
+                    for column in &live {
+                        if policy.ignore_columns.iter().any(|c| c == &column.name) {
                             continue;
                         }
-                        if !expected.iter().any(|name| name == &column.name) {
+                        if !expected.iter().any(|n| n == &column.name) {
                             diffs.push(DriftDiff {
                                 code: "extra_column".to_string(),
                                 severity: severity_for("extra_column", &policy),
@@ -203,6 +219,7 @@ impl DriftEngine {
                             });
                             continue;
                         }
+                        // type mismatch
                         if let Some(expected_types) = expected_column_types.get(&table_name) {
                             if let Some(logical_type) = expected_types.get(&column.name) {
                                 if !physical_type_matches(logical_type, &column.data_type) {
@@ -217,6 +234,7 @@ impl DriftEngine {
                                 }
                             }
                         }
+                        // nullability mismatch
                         if let Some(required_map) = expected_column_required.get(&table_name) {
                             if let Some(expected_required) = required_map.get(&column.name) {
                                 let expected_nullable = !expected_required;
@@ -235,6 +253,8 @@ impl DriftEngine {
                     }
                 }
             }
+
+            // ── Index drift ─────────────────────────────────────────────
             if !expected_indexes.is_empty() || !expected_constraints.is_empty() {
                 let live_indexes = introspect_table_indexes(&self.pool).await?;
                 let expected_constraint_names: BTreeMap<String, Vec<String>> = expected_constraints
@@ -242,18 +262,18 @@ impl DriftEngine {
                     .map(|(table, constraints)| {
                         (
                             table.clone(),
-                            constraints.iter().map(|entry| entry.name.clone()).collect(),
+                            constraints.iter().map(|e| e.name.clone()).collect(),
                         )
                     })
                     .collect();
 
                 for (table_name, indexes) in &expected_indexes {
-                    if policy.ignore_tables.iter().any(|item| item == table_name) {
+                    if policy.ignore_tables.iter().any(|t| t == table_name) {
                         continue;
                     }
                     let live = live_indexes.get(table_name).cloned().unwrap_or_default();
                     for index in indexes {
-                        if !live.iter().any(|name| name == &index.name) {
+                        if !live.iter().any(|n| n == &index.name) {
                             diffs.push(DriftDiff {
                                 code: "missing_index".to_string(),
                                 severity: severity_for("missing_index", &policy),
@@ -264,30 +284,25 @@ impl DriftEngine {
                 }
 
                 for (table_name, live_index_names) in live_indexes {
-                    if policy.ignore_tables.iter().any(|item| item == &table_name) {
+                    if policy.ignore_tables.iter().any(|t| t == &table_name) {
                         continue;
                     }
-                    let expected_idx_names = expected_indexes
+                    let expected_idx_names: Vec<String> = expected_indexes
                         .get(&table_name)
-                        .map(|indexes| {
-                            indexes
-                                .iter()
-                                .map(|index| index.name.clone())
-                                .collect::<Vec<_>>()
-                        })
+                        .map(|idx| idx.iter().map(|i| i.name.clone()).collect())
                         .unwrap_or_default();
-                    let expected_cons_names = expected_constraint_names
+                    let expected_cons_names: Vec<String> = expected_constraint_names
                         .get(&table_name)
                         .cloned()
                         .unwrap_or_default();
+
                     for index_name in live_index_names {
                         if is_auto_index(&index_name) {
                             continue;
                         }
-                        if expected_idx_names.iter().any(|name| name == &index_name) {
-                            continue;
-                        }
-                        if expected_cons_names.iter().any(|name| name == &index_name) {
+                        if expected_idx_names.iter().any(|n| n == &index_name)
+                            || expected_cons_names.iter().any(|n| n == &index_name)
+                        {
                             continue;
                         }
                         diffs.push(DriftDiff {
@@ -299,10 +314,11 @@ impl DriftEngine {
                 }
             }
 
+            // ── Constraint drift ────────────────────────────────────────
             if !expected_constraints.is_empty() {
                 let live_constraints = introspect_table_constraints(&self.pool).await?;
                 for (table_name, constraints) in &expected_constraints {
-                    if policy.ignore_tables.iter().any(|item| item == table_name) {
+                    if policy.ignore_tables.iter().any(|t| t == table_name) {
                         continue;
                     }
                     let live = live_constraints
@@ -310,7 +326,7 @@ impl DriftEngine {
                         .cloned()
                         .unwrap_or_default();
                     for constraint in constraints {
-                        if !live.iter().any(|name| name == &constraint.name) {
+                        if !live.iter().any(|n| n == &constraint.name) {
                             diffs.push(DriftDiff {
                                 code: "missing_constraint".to_string(),
                                 severity: severity_for("missing_constraint", &policy),
@@ -367,16 +383,40 @@ fn default_severity(code: &str) -> String {
 
 fn summarize(diffs: &[DriftDiff]) -> DriftSummary {
     DriftSummary {
-        error: diffs.iter().filter(|diff| diff.severity == "error").count() as u32,
-        warn: diffs.iter().filter(|diff| diff.severity == "warn").count() as u32,
-        info: diffs.iter().filter(|diff| diff.severity == "info").count() as u32,
+        error: diffs.iter().filter(|d| d.severity == "error").count() as u32,
+        warn: diffs.iter().filter(|d| d.severity == "warn").count() as u32,
+        info: diffs.iter().filter(|d| d.severity == "info").count() as u32,
     }
 }
 
-fn is_ignored_ops_table(name: &str) -> bool {
-    name.starts_with("sqlite_") || name.starts_with("ops_")
+/// Returns true if `name` is one of the well-known framework internal tables.
+fn is_framework_table(name: &str) -> bool {
+    name.starts_with("sqlite_") || FRAMEWORK_HISTORY_TABLES.contains(&name)
 }
 
 fn is_auto_index(name: &str) -> bool {
     name.starts_with("sqlite_autoindex") || name.ends_with("_pkey")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_framework_table() {
+        assert!(is_framework_table("sqlite_sequence"));
+        assert!(is_framework_table("ops_schema_migration_history"));
+        assert!(is_framework_table("ops_seed_history"));
+        assert!(is_framework_table("ops_database_installation_state"));
+        assert!(!is_framework_table("ops_custom_table"));
+        assert!(!is_framework_table("users"));
+    }
+
+    #[test]
+    fn test_default_severity() {
+        assert_eq!(default_severity("missing_table"), "error");
+        assert_eq!(default_severity("extra_table"), "warn");
+        assert_eq!(default_severity("extra_index"), "info");
+        assert_eq!(default_severity("checksum_mismatch"), "error");
+    }
 }

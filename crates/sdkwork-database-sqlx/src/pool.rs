@@ -1,4 +1,5 @@
 use std::fmt;
+use std::time::Instant;
 
 use sdkwork_database_config::{DatabaseConfig, DatabaseEngine, DeploymentMode};
 use sqlx::AnyPool;
@@ -127,6 +128,145 @@ impl DatabasePool {
             Self::Sqlite(pool, _) => pool.size(),
             Self::Postgres(pool, _) => pool.size(),
         }
+    }
+
+    /// Execute a raw SQL query.
+    ///
+    /// # Safety
+    /// This uses `raw_sql` and MUST only be called with trusted SQL content.
+    /// Returns the number of rows affected.
+    pub async fn execute_raw(&self, sql: &str) -> Result<u64, PoolError> {
+        match self {
+            Self::Sqlite(sqlite_pool, _) => {
+                let result = sqlx::raw_sql(sql).execute(sqlite_pool).await?;
+                Ok(result.rows_affected())
+            }
+            Self::Postgres(pg_pool, _) => {
+                let result = sqlx::raw_sql(sql).execute(pg_pool).await?;
+                Ok(result.rows_affected())
+            }
+        }
+    }
+
+    /// Check if the pool has active connections by running a simple query.
+    pub async fn test_connection(&self) -> Result<bool, PoolError> {
+        match self {
+            Self::Sqlite(sqlite_pool, _) => Ok(sqlx::query("SELECT 1")
+                .fetch_optional(sqlite_pool)
+                .await?
+                .is_some()),
+            Self::Postgres(pg_pool, _) => Ok(sqlx::query("SELECT 1")
+                .fetch_optional(pg_pool)
+                .await?
+                .is_some()),
+        }
+    }
+
+    /// Perform a comprehensive health check on the pool.
+    ///
+    /// Returns detailed health information including:
+    /// - Connection latency
+    /// - Pool utilization (idle vs total connections)
+    /// - Health status (healthy, degraded, unhealthy)
+    pub async fn health_check(&self) -> PoolHealth {
+        let start = Instant::now();
+        let connection_ok = self.test_connection().await;
+        let latency_ms = start.elapsed().as_millis() as u64;
+
+        let pool_size = self.size();
+        let idle_connections = self.num_idle();
+
+        let status = match connection_ok {
+            Ok(true) => {
+                if latency_ms > 1000 {
+                    PoolHealthStatus::Degraded("High latency".to_string())
+                } else if idle_connections == 0 && pool_size > 0 {
+                    PoolHealthStatus::Degraded("No idle connections".to_string())
+                } else {
+                    PoolHealthStatus::Healthy
+                }
+            }
+            Ok(false) => PoolHealthStatus::Unhealthy("Connection test failed".to_string()),
+            Err(e) => PoolHealthStatus::Unhealthy(e.to_string()),
+        };
+
+        PoolHealth {
+            status,
+            engine: self.engine().to_string(),
+            pool_size,
+            idle_connections,
+            latency_ms,
+            max_connections: self.config().max_connections,
+            min_connections: self.config().min_connections,
+        }
+    }
+}
+
+/// Health status of a connection pool.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PoolHealthStatus {
+    /// Pool is healthy and operating normally.
+    Healthy,
+    /// Pool is degraded (high latency, no idle connections, etc).
+    Degraded(String),
+    /// Pool is unhealthy (connection failures, etc).
+    Unhealthy(String),
+}
+
+impl PoolHealthStatus {
+    /// Check if the pool is healthy or degraded (still usable).
+    pub fn is_usable(&self) -> bool {
+        matches!(self, Self::Healthy | Self::Degraded(_))
+    }
+
+    /// Check if the pool is fully healthy.
+    pub fn is_healthy(&self) -> bool {
+        matches!(self, Self::Healthy)
+    }
+
+    /// Get the status label.
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Healthy => "healthy",
+            Self::Degraded(_) => "degraded",
+            Self::Unhealthy(_) => "unhealthy",
+        }
+    }
+}
+
+/// Detailed health information for a connection pool.
+#[derive(Debug, Clone)]
+pub struct PoolHealth {
+    pub status: PoolHealthStatus,
+    pub engine: String,
+    pub pool_size: u32,
+    pub idle_connections: usize,
+    pub latency_ms: u64,
+    pub max_connections: u32,
+    pub min_connections: u32,
+}
+
+impl PoolHealth {
+    /// Check if the pool is usable.
+    pub fn is_usable(&self) -> bool {
+        self.status.is_usable()
+    }
+
+    /// Get utilization percentage (used connections / max connections).
+    pub fn utilization(&self) -> f64 {
+        if self.max_connections == 0 {
+            return 0.0;
+        }
+        let used = self.pool_size.saturating_sub(self.idle_connections as u32);
+        (used as f64 / self.max_connections as f64) * 100.0
+    }
+
+    /// Get idle percentage (idle connections / pool size).
+    pub fn idle_percentage(&self) -> f64 {
+        if self.pool_size == 0 {
+            return 100.0;
+        }
+        (self.idle_connections as f64 / self.pool_size as f64) * 100.0
     }
 }
 

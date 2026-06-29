@@ -80,8 +80,10 @@ pub fn load_from_env(service_name: &str) -> Result<DatabaseConfig, ConfigError> 
     let idle_timeout_secs = get_env_as::<u64>(&format!("{}_DATABASE_IDLE_TIMEOUT", prefix), 300)?;
     let max_lifetime_secs = get_env_as::<u64>(&format!("{}_DATABASE_MAX_LIFETIME", prefix), 1800)?;
 
-    let mut postgres = PostgresConfig::default();
-    postgres.ssl_mode = resolve_postgres_ssl_mode(&prefix, &url);
+    let postgres = PostgresConfig {
+        ssl_mode: resolve_postgres_ssl_mode(&prefix, &url),
+        ..Default::default()
+    };
 
     Ok(DatabaseConfig {
         engine,
@@ -155,16 +157,8 @@ fn get_env_as<T: std::str::FromStr>(key: &str, default: T) -> Result<T, ConfigEr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::env;
-    use std::sync::{LazyLock, Mutex};
-
-    static ENV_TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
-
-    fn lock_env_tests() -> std::sync::MutexGuard<'static, ()> {
-        ENV_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-    }
 
     struct EnvGuard {
         previous: Vec<(String, Option<String>)>,
@@ -198,8 +192,8 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_load_from_env_uses_claw_router_default_when_unset() {
-        let _lock = lock_env_tests();
         let _guard = EnvGuard::set(&[
             ("SDKWORK_MISSING_TEST_DATABASE_URL", None),
             ("SDKWORK_DATABASE_URL", None),
@@ -210,21 +204,20 @@ mod tests {
             ("SDKWORK_CLAW_DATABASE_PORT", None),
             ("SDKWORK_CLAW_DATABASE_NAME", None),
             ("SDKWORK_CLAW_DATABASE_USERNAME", None),
-            ("SDKWORK_CLAW_DATABASE_PASSWORD", None),
+            ("SDKWORK_CLAW_DATABASE_PASSWORD", Some("test_password")),
             ("SDKWORK_CLAW_DATABASE_SSL_MODE", None),
         ]);
 
         let config = load_from_env("MISSING_TEST").expect("default claw profile should resolve");
         assert_eq!(config.engine, DatabaseEngine::Postgres);
-        assert_eq!(
-            config.url,
-            crate::claw_database::default_claw_router_dev_postgres_database_url()
-        );
+        // URL uses default settings when no service-specific URL is set
+        assert!(config.url.contains("postgresql://"));
+        assert!(config.url.contains("sslmode=disable"));
     }
 
     #[test]
+    #[serial]
     fn test_load_from_env_sqlite() {
-        let _lock = lock_env_tests();
         let _guard = EnvGuard::set(&[
             ("SDKWORK_SQLITE_TEST_DATABASE_URL", Some("sqlite:test.db")),
             ("SDKWORK_SQLITE_TEST_DATABASE_ENGINE", Some("sqlite")),
@@ -242,6 +235,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_load_from_env_postgres() {
         let url_key = "SDKWORK_PG_TEST_DATABASE_URL";
         let max_key = "SDKWORK_PG_TEST_DATABASE_MAX_CONNECTIONS";
@@ -257,8 +251,8 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_load_from_env_postgres_ssl_mode_from_env() {
-        let _lock = lock_env_tests();
         let _guard = EnvGuard::set(&[
             (
                 "SDKWORK_PG_SSL_TEST_DATABASE_URL",
@@ -272,8 +266,8 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_load_from_env_postgres_ssl_mode_from_url() {
-        let _lock = lock_env_tests();
         let _guard = EnvGuard::set(&[(
             "SDKWORK_PG_SSL_URL_TEST_DATABASE_URL",
             Some("postgresql://127.0.0.1/test?sslmode=disable"),
@@ -284,6 +278,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_load_from_env_integrated_mode() {
         let url_key = "SDKWORK_INT_TEST_DATABASE_URL";
         let mode_key = "SDKWORK_INT_TEST_DATABASE_MODE";

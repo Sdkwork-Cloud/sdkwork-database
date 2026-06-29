@@ -1,3 +1,15 @@
+//! Axum router and auth for SDKWork database ops endpoints.
+//!
+//! Provides:
+//! - `/backend/v3/ops/database/status`
+//! - `/backend/v3/ops/database/drift`
+//! - `/backend/v3/ops/database/migrations`
+//! - `/backend/v3/ops/database/seeds`
+//!
+//! Authentication is pluggable via [`DatabaseOpsAuth`]. Production deployments
+//! SHOULD use the composable auth chain:
+//! `AuditingOpsAuth(RateLimitedOpsAuth(BearerTokenOpsAuth))`.
+
 mod auth;
 
 use std::sync::Arc;
@@ -8,8 +20,12 @@ use sdkwork_database_spi::{DefaultDatabaseModule, LocaleTag, SeedProfile};
 use sdkwork_database_sqlx::DatabasePool;
 use serde::Deserialize;
 
-pub use auth::{BearerTokenOpsAuth, DatabaseOpsAuth, RejectAllOpsAuth};
+pub use auth::{
+    default_ops_auth, AuditingOpsAuth, BearerTokenOpsAuth, DatabaseOpsAuth, RateLimitedOpsAuth,
+    RejectAllOpsAuth,
+};
 
+/// Shared state for ops HTTP routes.
 #[derive(Clone)]
 pub struct DatabaseOpsHttpState {
     pub service: Arc<DatabaseOpsService>,
@@ -19,6 +35,7 @@ pub struct DatabaseOpsHttpState {
 }
 
 impl DatabaseOpsHttpState {
+    /// Create a new state from a pool, module, and auth provider.
     pub fn new(
         pool: DatabasePool,
         module: Arc<DefaultDatabaseModule>,
@@ -33,6 +50,24 @@ impl DatabaseOpsHttpState {
             auth,
         }
     }
+
+    /// Create a state with the production-ready default auth chain.
+    ///
+    /// Falls back to `RejectAllOpsAuth` if `SDKWORK_ACCESS_TOKEN` is not set.
+    pub fn new_with_default_auth(
+        pool: DatabasePool,
+        module: Arc<DefaultDatabaseModule>,
+        default_locale: LocaleTag,
+        default_profile: SeedProfile,
+    ) -> Self {
+        Self::new(
+            pool,
+            module,
+            default_locale,
+            default_profile,
+            default_ops_auth(),
+        )
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -41,6 +76,9 @@ struct DriftQuery {
     refresh: bool,
 }
 
+/// Attach ops routes to an existing Axum router.
+///
+/// All routes are protected by the provided [`DatabaseOpsAuth`] implementation.
 pub fn attach_ops_routes<S>(router: Router<S>, state: DatabaseOpsHttpState) -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
@@ -62,7 +100,11 @@ where
                             Ok(report) => Json(report).into_response(),
                             Err(error) => (
                                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                                error.to_string(),
+                                serde_json::json!({
+                                    "error": "status_check_failed",
+                                    "message": error.to_string()
+                                })
+                                .to_string(),
                             )
                                 .into_response(),
                         }
@@ -87,7 +129,11 @@ where
                             Ok(report) => Json(report).into_response(),
                             Err(error) => (
                                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                                error.to_string(),
+                                serde_json::json!({
+                                    "error": "drift_check_failed",
+                                    "message": error.to_string()
+                                })
+                                .to_string(),
                             )
                                 .into_response(),
                         }
@@ -111,7 +157,11 @@ where
                             Ok(report) => Json(report).into_response(),
                             Err(error) => (
                                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                                error.to_string(),
+                                serde_json::json!({
+                                    "error": "migrations_query_failed",
+                                    "message": error.to_string()
+                                })
+                                .to_string(),
                             )
                                 .into_response(),
                         }
@@ -122,6 +172,7 @@ where
         .route(
             "/backend/v3/ops/database/seeds",
             get({
+                let state = state.clone();
                 move |headers: HeaderMap| {
                     let state = state.clone();
                     async move {
@@ -138,7 +189,11 @@ where
                             Ok(report) => Json(report).into_response(),
                             Err(error) => (
                                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                                error.to_string(),
+                                serde_json::json!({
+                                    "error": "seeds_query_failed",
+                                    "message": error.to_string()
+                                })
+                                .to_string(),
                             )
                                 .into_response(),
                         }
@@ -146,4 +201,21 @@ where
                 }
             }),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::StatusCode;
+
+    #[test]
+    fn test_default_ops_auth_fallback_to_reject() {
+        // When SDKWORK_ACCESS_TOKEN is not set, should fall back to RejectAllOpsAuth
+        let auth = default_ops_auth();
+        let headers = HeaderMap::new();
+        assert_eq!(
+            auth.authorize(&headers).unwrap_err(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
 }

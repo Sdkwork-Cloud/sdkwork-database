@@ -27,3 +27,12 @@ pub enum PoolError {
     #[error("Migration error: {0}")]
     Migration(String),
 }
+
+impl From<sqlx::Error> for PoolError {
+    fn from(err: sqlx::Error) -> Self {
+        match err {
+            sqlx::Error::PoolTimedOut | sqlx::Error::PoolClosed => Self::PoolCreation(err),
+            _ => Self::Connection(err),
+        }
+    }
+}

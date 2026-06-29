@@ -98,19 +98,10 @@ impl AutoTimestamp {
 /// user.soft_delete.restore();
 /// assert!(!user.soft_delete.is_deleted());
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SoftDelete {
     pub deleted_at: Option<NaiveDateTime>,
     pub deleted_by: Option<String>,
-}
-
-impl Default for SoftDelete {
-    fn default() -> Self {
-        Self {
-            deleted_at: None,
-            deleted_by: None,
-        }
-    }
 }
 
 impl SoftDelete {
@@ -236,7 +227,7 @@ impl Pagination {
     pub fn new(page: i64, per_page: i64) -> Self {
         Self {
             page: page.max(1),
-            per_page: per_page.max(1).min(100),
+            per_page: per_page.clamp(1, 100),
         }
     }
 

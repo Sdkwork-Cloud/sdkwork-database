@@ -15,6 +15,14 @@ pub enum RepositoryError {
     #[error("Validation error: {0}")]
     Validation(String),
 
+    /// Query validation error (SQL injection prevention).
+    #[error("Query validation error: {0}")]
+    QueryValidation(String),
+
+    /// Invalid column name (SQL injection prevention).
+    #[error("Invalid column name: {0}")]
+    InvalidColumnName(String),
+
     /// Configuration error.
     #[error("Configuration error: {0}")]
     Config(#[from] sdkwork_database_config::ConfigError),

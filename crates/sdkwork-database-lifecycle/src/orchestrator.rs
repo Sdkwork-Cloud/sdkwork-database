@@ -14,6 +14,7 @@ use sdkwork_database_spi::{
 };
 
 use crate::error::LifecycleError;
+use crate::seed_security::validate_seed_content;
 
 pub struct LifecycleOrchestrator {
     pool: sdkwork_database_sqlx::DatabasePool,
@@ -41,6 +42,8 @@ impl LifecycleOrchestrator {
     pub async fn init(&self) -> Result<(), LifecycleError> {
         self.emit_state_change(LifecycleState::Uninitialized, LifecycleState::Bootstrapped)
             .await?;
+        // Use default "ops_" prefix for backward compatibility
+        // TODO(ARCH-1): In integrated mode, use module-specific prefix
         ensure_history_tables(&self.pool).await?;
         self.apply_baseline_if_needed().await?;
         let descriptor = self.module.descriptor();
@@ -70,7 +73,10 @@ impl LifecycleOrchestrator {
         let engine = self.pool.engine();
         let applied =
             list_applied_migration_versions(&self.pool, &descriptor.module_id, engine).await?;
-        if !applied.is_empty() && self.baseline_anchor_table_present().await? {
+
+        // Resolve anchor table name from manifest or use default
+        let anchor_table = self.resolve_anchor_table_name(&manifest);
+        if !applied.is_empty() && self.baseline_anchor_table_present(&anchor_table).await? {
             return Ok(0);
         }
         if let Some(installation) = fetch_installation_state(&self.pool).await? {
@@ -149,6 +155,7 @@ impl LifecycleOrchestrator {
     pub async fn migrate(&self) -> Result<usize, LifecycleError> {
         self.emit_state_change(LifecycleState::Bootstrapped, LifecycleState::Migrating)
             .await?;
+        // Use default "ops_" prefix for backward compatibility
         ensure_history_tables(&self.pool).await?;
         let mut applied_count = self.apply_baseline_if_needed().await?;
         let descriptor = self.module.descriptor();
@@ -232,7 +239,9 @@ impl LifecycleOrchestrator {
     ) -> Result<usize, LifecycleError> {
         self.emit_state_change(LifecycleState::SchemaCurrent, LifecycleState::Seeding)
             .await?;
+        // Use default "ops_" prefix for backward compatibility
         ensure_history_tables(&self.pool).await?;
+        let _descriptor = self.module.descriptor(); // Used for module_id extraction in future ARCH-1 work
         let descriptor = self.module.descriptor();
         let plan = self.module.resolve_seed_plan(locale, profile).await?;
         let ctx = SeedContext {
@@ -252,12 +261,41 @@ impl LifecycleOrchestrator {
                 )));
             }
 
-            let seed_id = script_path
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or("unknown")
-                .to_string();
+            let sql = std::fs::read_to_string(script_path).map_err(|error| {
+                LifecycleError::Seed(format!(
+                    "failed to read seed {}: {error}",
+                    script_path.display()
+                ))
+            })?;
 
+            // Security validation before execution
+            let security_report = validate_seed_content(&sql, script_path)?;
+            if !security_report.is_safe {
+                return Err(LifecycleError::Seed(format!(
+                    "Security violation in seed file '{}': {}",
+                    script_path.display(),
+                    security_report
+                        .errors
+                        .iter()
+                        .map(|e| e.message.clone())
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                )));
+            }
+
+            // Use content hash as seed_id for true idempotency
+            // This ensures re-running detects content changes
+            let content_checksum = file_checksum(script_path)?;
+            let seed_id = format!(
+                "{}:{}",
+                script_path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("unknown"),
+                &content_checksum
+            );
+
+            // Check if seed was already applied (idempotency)
             if is_seed_applied(
                 &self.pool,
                 &descriptor.module_id,
@@ -267,16 +305,22 @@ impl LifecycleOrchestrator {
             )
             .await?
             {
+                tracing::debug!(
+                    target: "sdkwork.database.seed",
+                    seed_file = script_path.display().to_string(),
+                    checksum = content_checksum,
+                    "seed already applied (checksum match)"
+                );
                 continue;
             }
 
-            let sql = std::fs::read_to_string(script_path).map_err(|error| {
-                LifecycleError::Seed(format!(
-                    "failed to read seed {}: {error}",
-                    script_path.display()
-                ))
-            })?;
-            let checksum = file_checksum(script_path)?;
+            tracing::info!(
+                target: "sdkwork.database.seed",
+                seed_file = script_path.display().to_string(),
+                checksum = content_checksum,
+                "applying seed (security validated)"
+            );
+
             execute_sql_script(&self.pool, &sql).await?;
             record_seed(
                 &self.pool,
@@ -284,7 +328,7 @@ impl LifecycleOrchestrator {
                 &seed_id,
                 &locale.0,
                 &profile.0,
-                &checksum,
+                &content_checksum,
                 &self.applied_by,
             )
             .await?;
@@ -337,7 +381,10 @@ impl LifecycleOrchestrator {
         Ok(())
     }
 
-    async fn baseline_anchor_table_present(&self) -> Result<bool, LifecycleError> {
+    async fn baseline_anchor_table_present(
+        &self,
+        anchor_table: &str,
+    ) -> Result<bool, LifecycleError> {
         use sdkwork_database_sqlx::DatabasePool;
 
         let descriptor = self.module.descriptor();
@@ -348,7 +395,7 @@ impl LifecycleOrchestrator {
                 SELECT 1
                 FROM information_schema.tables
                 WHERE table_schema = $1
-                  AND table_name = 'iam_tenant'
+                  AND table_name = $2
             ) AS present
         "#;
 
@@ -356,6 +403,7 @@ impl LifecycleOrchestrator {
             DatabasePool::Postgres(pool, _) => {
                 let present = sqlx::query_scalar::<_, bool>(query)
                     .bind(schema)
+                    .bind(anchor_table)
                     .fetch_one(pool)
                     .await
                     .map_err(|error| {
@@ -367,8 +415,9 @@ impl LifecycleOrchestrator {
             }
             DatabasePool::Sqlite(pool, _) => {
                 let present = sqlx::query_scalar::<_, i64>(
-                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'iam_tenant'",
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = $1",
                 )
+                .bind(anchor_table)
                 .fetch_one(pool)
                 .await
                 .map_err(|error| {
@@ -379,5 +428,26 @@ impl LifecycleOrchestrator {
                 Ok(present)
             }
         }
+    }
+
+    /// Resolve the anchor table name from manifest configuration.
+    ///
+    /// Priority:
+    /// 1. Explicit `baselineAnchorTable` in manifest
+    /// 2. `{first_prefix}tenant` if table prefixes are defined
+    /// 3. Fallback to `{module_id}_tenant` for backward compatibility
+    fn resolve_anchor_table_name(&self, manifest: &DatabaseManifest) -> String {
+        // 1. Explicit configuration takes precedence
+        if let Some(explicit) = &manifest.baseline_anchor_table {
+            return explicit.clone();
+        }
+
+        // 2. Use first table prefix if defined
+        if let Some(first_prefix) = manifest.table_prefixes.first() {
+            return format!("{}tenant", first_prefix);
+        }
+
+        // 3. Fallback to module_id based name
+        format!("{}_tenant", manifest.module_id)
     }
 }
