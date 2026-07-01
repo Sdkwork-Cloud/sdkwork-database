@@ -1,4 +1,5 @@
 # sdkwork-database
+repository-kind: foundation-dependency
 
 Unified database connection pool management library for all SDKWork applications.
 
