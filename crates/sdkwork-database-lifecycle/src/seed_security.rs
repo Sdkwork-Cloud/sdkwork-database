@@ -151,10 +151,13 @@ pub fn validate_seed_content(
 /// Check for dangerous SQL keywords.
 fn check_dangerous_keywords(content: &str, report: &mut SeedSecurityReport) {
     for (line_num, line) in content.lines().enumerate() {
-        let upper_line = line.to_uppercase();
+        let Some(sql_line) = executable_sql_prefix(line) else {
+            continue;
+        };
+        let tokens = sql_tokens(&sql_line);
 
         for keyword in DANGEROUS_KEYWORDS {
-            if upper_line.contains(keyword) {
+            if contains_keyword_phrase(&tokens, keyword) {
                 report.add_error(
                     line_num + 1,
                     format!(
@@ -168,7 +171,9 @@ fn check_dangerous_keywords(content: &str, report: &mut SeedSecurityReport) {
         }
 
         // Warn about potentially destructive operations
-        if upper_line.contains("DROP TABLE") || upper_line.contains("DROP INDEX") {
+        if contains_keyword_phrase(&tokens, "DROP TABLE")
+            || contains_keyword_phrase(&tokens, "DROP INDEX")
+        {
             report.add_warning(
                 line_num + 1,
                 format!("DROP operation detected: {}", line.trim()),
@@ -182,10 +187,22 @@ fn check_dangerous_keywords(content: &str, report: &mut SeedSecurityReport) {
 /// Check for SQL injection patterns.
 fn check_injection_patterns(content: &str, report: &mut SeedSecurityReport) {
     for (line_num, line) in content.lines().enumerate() {
-        let upper_line = line.to_uppercase();
+        if is_full_line_comment(line) {
+            continue;
+        }
+
+        let masked_line = mask_string_literals(line);
+        let upper_line = masked_line.to_uppercase();
+        let tokens = sql_tokens(&upper_line);
 
         for pattern in INJECTION_PATTERNS {
-            if upper_line.contains(pattern) {
+            let matched = match *pattern {
+                "--" | ";--" => contains_line_comment(&upper_line),
+                "/*" | "*/" => upper_line.contains(pattern),
+                "UNION SELECT" | "UNION ALL SELECT" => contains_keyword_phrase(&tokens, pattern),
+                _ => upper_line.contains(pattern),
+            };
+            if matched {
                 report.add_error(
                     line_num + 1,
                     format!(
@@ -197,6 +214,87 @@ fn check_injection_patterns(content: &str, report: &mut SeedSecurityReport) {
             }
         }
     }
+}
+
+fn is_full_line_comment(line: &str) -> bool {
+    line.trim_start().starts_with("--")
+}
+
+fn executable_sql_prefix(line: &str) -> Option<String> {
+    if is_full_line_comment(line) {
+        return None;
+    }
+
+    let masked = mask_string_literals(line);
+    let prefix_len = masked.find("--").unwrap_or(masked.len());
+    let prefix = &masked[..prefix_len];
+    Some(prefix.to_uppercase())
+}
+
+fn mask_string_literals(line: &str) -> String {
+    let mut output = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    let mut in_string = false;
+    let mut string_char = '\0';
+
+    while let Some(ch) = chars.next() {
+        if in_string {
+            output.push(' ');
+            if ch == string_char {
+                if matches!(chars.peek(), Some(next) if *next == string_char) {
+                    output.push(' ');
+                    chars.next();
+                } else {
+                    in_string = false;
+                }
+            }
+            continue;
+        }
+
+        if ch == '\'' || ch == '"' {
+            in_string = true;
+            string_char = ch;
+            output.push(' ');
+        } else {
+            output.push(ch);
+        }
+    }
+
+    output
+}
+
+fn sql_tokens(line: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+
+    for ch in line.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            current.push(ch.to_ascii_uppercase());
+        } else if !current.is_empty() {
+            tokens.push(std::mem::take(&mut current));
+        }
+    }
+
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+
+    tokens
+}
+
+fn contains_keyword_phrase(tokens: &[String], phrase: &str) -> bool {
+    let phrase_tokens = sql_tokens(phrase);
+    if phrase_tokens.is_empty() || tokens.len() < phrase_tokens.len() {
+        return false;
+    }
+
+    tokens
+        .windows(phrase_tokens.len())
+        .any(|window| window == phrase_tokens.as_slice())
+}
+
+fn contains_line_comment(masked_upper_line: &str) -> bool {
+    masked_upper_line.contains("--")
 }
 
 /// Validate that the seed file path is safe.
@@ -302,6 +400,29 @@ mod tests {
         let content = "SELECT * FROM users; -- malicious comment";
         let report = validate_seed_content(content, &PathBuf::from("seeds/test.sql")).unwrap();
         assert!(!report.is_safe);
+    }
+
+    #[test]
+    fn test_grant_substrings_in_seed_identifiers_are_safe() {
+        let content = r#"
+INSERT INTO entitlement_grant (
+    id, grant_no, grant_policy, granted_quantity, total_granted
+) VALUES (
+    'seed-entitlement-grant-user-1', 'seed-grant-user-1', 'membership_plan', '20', '20'
+);
+"#;
+        let report = validate_seed_content(content, &PathBuf::from("seeds/test.sql")).unwrap();
+        assert!(report.is_safe, "{:?}", report.errors);
+    }
+
+    #[test]
+    fn test_full_line_seed_comments_are_safe() {
+        let content = r#"
+-- Language-neutral bootstrap rows for local development.
+INSERT INTO users (id, name) VALUES (1, 'Alice');
+"#;
+        let report = validate_seed_content(content, &PathBuf::from("seeds/test.sql")).unwrap();
+        assert!(report.is_safe, "{:?}", report.errors);
     }
 
     #[test]
