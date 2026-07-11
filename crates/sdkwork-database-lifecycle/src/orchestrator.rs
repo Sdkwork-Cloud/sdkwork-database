@@ -71,12 +71,18 @@ impl LifecycleOrchestrator {
 
         let descriptor = self.module.descriptor();
         let engine = self.pool.engine();
+        // Baseline scripts are schema snapshots, not expand-only migrations. If the anchor table
+        // already exists, replaying a folded baseline can fail on older partial framework tables
+        // before migrate/drift checks get a chance to reconcile the module state.
+        let anchor_table = self.resolve_anchor_table_name(&manifest);
+        if self.baseline_anchor_table_present(&anchor_table).await? {
+            return Ok(0);
+        }
+
         let applied =
             list_applied_migration_versions(&self.pool, &descriptor.module_id, engine).await?;
 
-        // Resolve anchor table name from manifest or use default
-        let anchor_table = self.resolve_anchor_table_name(&manifest);
-        if !applied.is_empty() && self.baseline_anchor_table_present(&anchor_table).await? {
+        if !applied.is_empty() {
             return Ok(0);
         }
         if let Some(installation) = fetch_installation_state(&self.pool).await? {

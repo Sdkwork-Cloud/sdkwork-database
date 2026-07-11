@@ -85,3 +85,67 @@ async fn migrate_and_seed_smoke() {
         .unwrap();
     assert_eq!(seeds_again, 0);
 }
+
+#[tokio::test]
+async fn baseline_is_skipped_when_anchor_table_already_exists_without_module_history() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+
+    write_file(
+        &root.join("database/database.manifest.json"),
+        r#"{
+  "schemaVersion": 1,
+  "kind": "sdkwork.database.module",
+  "moduleId": "knowledgebase",
+  "serviceCode": "KNOWLEDGEBASE",
+  "contractVersion": "1.0.0",
+  "baselineStrategy": "baseline-plus-migrations",
+  "baselineAnchorTable": "kb_space",
+  "paths": {
+    "contract": "contract/schema.yaml",
+    "migrations": "migrations",
+    "seeds": "seeds",
+    "driftPolicy": "drift/policy.yaml"
+  },
+  "lifecycle": { "activeSeedLocales": ["zh-CN"] }
+}"#,
+    );
+
+    write_file(
+        &root.join("database/ddl/baseline/sqlite/0001_existing_web_audit_baseline.sql"),
+        "CREATE TABLE IF NOT EXISTS web_audit_event (id INTEGER PRIMARY KEY, created_at INTEGER NOT NULL);\n\
+         CREATE INDEX IF NOT EXISTS idx_web_audit_expires ON web_audit_event (expires_at);",
+    );
+
+    let module = Arc::new(DefaultDatabaseModule::from_app_root(root).unwrap());
+    let config = DatabaseConfig {
+        engine: DatabaseEngine::Sqlite,
+        url: "sqlite::memory:".to_string(),
+        max_connections: 1,
+        ..Default::default()
+    };
+    let pool = create_pool_from_config(config).await.unwrap();
+    let sqlite_pool = pool.as_sqlite().expect("sqlite pool").clone();
+    sqlx::query("CREATE TABLE kb_space (id INTEGER PRIMARY KEY)")
+        .execute(&sqlite_pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TABLE web_audit_event (id INTEGER PRIMARY KEY, created_at INTEGER NOT NULL)",
+    )
+    .execute(&sqlite_pool)
+    .await
+    .unwrap();
+
+    let orchestrator = LifecycleOrchestrator::new(pool, module);
+
+    orchestrator.init().await.unwrap();
+
+    let expires_at_column_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('web_audit_event') WHERE name = 'expires_at'",
+    )
+    .fetch_one(&sqlite_pool)
+    .await
+    .unwrap();
+    assert_eq!(expires_at_column_count, 0);
+}

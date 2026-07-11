@@ -240,6 +240,9 @@ pub async fn execute_sql_script(pool: &DatabasePool, script: &str) -> Result<(),
 pub async fn execute_sql(pool: &DatabasePool, sql: &str) -> Result<(), HistoryError> {
     match pool {
         DatabasePool::Sqlite(sqlite_pool, _) => {
+            if execute_sqlite_add_column_if_not_exists(sqlite_pool, sql).await? {
+                return Ok(());
+            }
             sqlx::raw_sql(sql)
                 .execute(sqlite_pool)
                 .await
@@ -253,6 +256,262 @@ pub async fn execute_sql(pool: &DatabasePool, sql: &str) -> Result<(), HistoryEr
         }
     }
     Ok(())
+}
+
+struct SqliteAddColumnIfNotExists {
+    table_name: String,
+    columns: Vec<SqliteAddColumnClause>,
+}
+
+struct SqliteAddColumnClause {
+    column_name: String,
+    column_definition_tail: String,
+}
+
+async fn execute_sqlite_add_column_if_not_exists(
+    pool: &sqlx::SqlitePool,
+    sql: &str,
+) -> Result<bool, HistoryError> {
+    let Some(statement) = parse_sqlite_add_column_if_not_exists(sql) else {
+        return Ok(false);
+    };
+
+    for column in statement.columns {
+        if sqlite_column_exists(pool, &statement.table_name, &column.column_name).await? {
+            continue;
+        }
+        let add_column_sql = format!(
+            "ALTER TABLE {} ADD COLUMN {} {};",
+            quote_sqlite_identifier(&statement.table_name),
+            quote_sqlite_identifier(&column.column_name),
+            column.column_definition_tail
+        );
+        sqlx::raw_sql(&add_column_sql)
+            .execute(pool)
+            .await
+            .map_err(|error| {
+                HistoryError::Sql(format!("sqlite add column if not exists failed: {error}"))
+            })?;
+    }
+
+    Ok(true)
+}
+
+async fn sqlite_column_exists(
+    pool: &sqlx::SqlitePool,
+    table_name: &str,
+    column_name: &str,
+) -> Result<bool, HistoryError> {
+    let query = format!(
+        "SELECT COUNT(*) FROM pragma_table_info({}) WHERE name = $1",
+        quote_sqlite_string_literal(table_name)
+    );
+    let count = sqlx::query_scalar::<_, i64>(&query)
+        .bind(column_name)
+        .fetch_one(pool)
+        .await
+        .map_err(|error| {
+            HistoryError::Sql(format!("sqlite column existence check failed: {error}"))
+        })?;
+    Ok(count > 0)
+}
+
+fn parse_sqlite_add_column_if_not_exists(sql: &str) -> Option<SqliteAddColumnIfNotExists> {
+    let trimmed = strip_leading_sql_comments(sql.trim().trim_end_matches(';').trim());
+    let rest = consume_keyword(trimmed, "ALTER")?;
+    let rest = consume_keyword(rest, "TABLE")?;
+    let (table_name, rest) = parse_identifier(rest)?;
+    let clauses = split_top_level_commas(rest.trim());
+    let mut columns = Vec::new();
+
+    for clause in clauses {
+        let clause = clause.trim();
+        let rest = consume_keyword(clause, "ADD")?;
+        let rest = consume_keyword(rest, "COLUMN")?;
+        let rest = consume_keyword(rest, "IF")?;
+        let rest = consume_keyword(rest, "NOT")?;
+        let rest = consume_keyword(rest, "EXISTS")?;
+        let (column_name, definition_tail) = parse_identifier(rest)?;
+        let definition_tail = definition_tail.trim();
+        if definition_tail.is_empty() {
+            return None;
+        }
+        columns.push(SqliteAddColumnClause {
+            column_name,
+            column_definition_tail: definition_tail.to_string(),
+        });
+    }
+
+    if columns.is_empty() {
+        return None;
+    }
+
+    Some(SqliteAddColumnIfNotExists {
+        table_name,
+        columns,
+    })
+}
+
+fn consume_keyword<'a>(input: &'a str, keyword: &str) -> Option<&'a str> {
+    let input = input.trim_start();
+    let prefix = input.get(..keyword.len())?;
+    if !prefix.eq_ignore_ascii_case(keyword) {
+        return None;
+    }
+    let remainder = &input[keyword.len()..];
+    if remainder
+        .chars()
+        .next()
+        .is_some_and(is_identifier_character)
+    {
+        return None;
+    }
+    Some(remainder)
+}
+
+fn parse_identifier(input: &str) -> Option<(String, &str)> {
+    let input = input.trim_start();
+    let mut chars = input.char_indices();
+    let (_, first) = chars.next()?;
+
+    match first {
+        '"' | '`' => parse_quoted_identifier(input, first, first),
+        '[' => parse_quoted_identifier(input, '[', ']'),
+        _ => {
+            let end = input
+                .char_indices()
+                .find_map(|(index, ch)| (!is_identifier_character(ch)).then_some(index))
+                .unwrap_or(input.len());
+            if end == 0 {
+                return None;
+            }
+            Some((input[..end].to_string(), &input[end..]))
+        }
+    }
+}
+
+fn parse_quoted_identifier(input: &str, open: char, close: char) -> Option<(String, &str)> {
+    let start_len = open.len_utf8();
+    let mut value = String::new();
+    let mut index = start_len;
+    while index < input.len() {
+        let ch = input[index..].chars().next()?;
+        let ch_len = ch.len_utf8();
+        if ch == close {
+            let next_index = index + ch_len;
+            if input[next_index..].starts_with(close) && close != ']' {
+                value.push(close);
+                index = next_index + close.len_utf8();
+                continue;
+            }
+            return Some((value, &input[next_index..]));
+        }
+        value.push(ch);
+        index += ch_len;
+    }
+    None
+}
+
+fn is_identifier_character(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '_' | '$' | '.')
+}
+
+fn strip_leading_sql_comments(mut input: &str) -> &str {
+    loop {
+        input = input.trim_start();
+        if let Some(after_comment) = input.strip_prefix("--") {
+            let Some(newline_index) = after_comment.find('\n') else {
+                return "";
+            };
+            input = &after_comment[newline_index + 1..];
+            continue;
+        }
+        if let Some(after_comment) = input.strip_prefix("/*") {
+            let Some(end_index) = after_comment.find("*/") else {
+                return input;
+            };
+            input = &after_comment[end_index + 2..];
+            continue;
+        }
+        return input;
+    }
+}
+
+fn split_top_level_commas(input: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut index = 0;
+    let mut paren_depth = 0_u32;
+    let mut state = SqlSplitState::Normal;
+    let bytes = input.as_bytes();
+
+    while index < input.len() {
+        let ch = bytes[index] as char;
+        match state {
+            SqlSplitState::Normal => {
+                if ch == '\'' {
+                    index += 1;
+                    state = SqlSplitState::SingleQuoted;
+                    continue;
+                }
+                if ch == '"' {
+                    index += 1;
+                    state = SqlSplitState::DoubleQuoted;
+                    continue;
+                }
+                match ch {
+                    '(' => paren_depth += 1,
+                    ')' => paren_depth = paren_depth.saturating_sub(1),
+                    ',' if paren_depth == 0 => {
+                        parts.push(&input[start..index]);
+                        start = index + 1;
+                    }
+                    _ => {}
+                }
+                index += 1;
+            }
+            SqlSplitState::SingleQuoted => {
+                if ch == '\'' {
+                    if bytes.get(index + 1).copied() == Some(b'\'') {
+                        index += 2;
+                    } else {
+                        index += 1;
+                        state = SqlSplitState::Normal;
+                    }
+                } else {
+                    index += 1;
+                }
+            }
+            SqlSplitState::DoubleQuoted => {
+                if ch == '"' {
+                    if bytes.get(index + 1).copied() == Some(b'"') {
+                        index += 2;
+                    } else {
+                        index += 1;
+                        state = SqlSplitState::Normal;
+                    }
+                } else {
+                    index += 1;
+                }
+            }
+            SqlSplitState::DollarQuoted
+            | SqlSplitState::LineComment
+            | SqlSplitState::BlockComment => {
+                index += 1;
+            }
+        }
+    }
+
+    parts.push(&input[start..]);
+    parts
+}
+
+fn quote_sqlite_identifier(identifier: &str) -> String {
+    format!("\"{}\"", identifier.replace('"', "\"\""))
+}
+
+fn quote_sqlite_string_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
 }
 
 /// Compute SHA-256 checksum of a file on disk.
@@ -952,6 +1211,106 @@ SELECT 1;
         assert!(stmts[0].starts_with("DO $$"));
         assert!(stmts[0].contains("END $$;"));
         assert_eq!(stmts[1], "SELECT 1;");
+    }
+
+    #[tokio::test]
+    async fn creates_default_history_tables_on_sqlite() {
+        let config = sdkwork_database_config::DatabaseConfig {
+            engine: DatabaseEngine::Sqlite,
+            url: "sqlite::memory:".to_string(),
+            max_connections: 1,
+            ..Default::default()
+        };
+        let pool = sdkwork_database_sqlx::create_pool_from_config(config)
+            .await
+            .expect("sqlite pool");
+
+        ensure_history_tables(&pool)
+            .await
+            .expect("history tables should be created");
+
+        let sqlite = pool.as_sqlite().expect("sqlite pool");
+        for table_name in [
+            "ops_schema_migration_history",
+            "ops_seed_history",
+            "ops_database_installation_state",
+        ] {
+            let present = sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = $1",
+            )
+            .bind(table_name)
+            .fetch_one(sqlite)
+            .await
+            .expect("table probe");
+            assert_eq!(present, 1, "{table_name} should exist");
+        }
+    }
+
+    #[tokio::test]
+    async fn sqlite_execute_sql_script_supports_add_column_if_not_exists() {
+        let config = sdkwork_database_config::DatabaseConfig {
+            engine: DatabaseEngine::Sqlite,
+            url: "sqlite::memory:".to_string(),
+            max_connections: 1,
+            ..Default::default()
+        };
+        let pool = sdkwork_database_sqlx::create_pool_from_config(config)
+            .await
+            .expect("sqlite pool");
+
+        execute_sql_script(
+            &pool,
+            r#"
+            CREATE TABLE probe (id TEXT PRIMARY KEY);
+            ALTER TABLE probe ADD COLUMN IF NOT EXISTS display_name TEXT NOT NULL DEFAULT '';
+            ALTER TABLE probe ADD COLUMN IF NOT EXISTS display_name TEXT NOT NULL DEFAULT '';
+            "#,
+        )
+        .await
+        .expect("conditional add column should be idempotent");
+
+        let sqlite = pool.as_sqlite().expect("sqlite pool");
+        let present = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM pragma_table_info('probe') WHERE name = 'display_name'",
+        )
+        .fetch_one(sqlite)
+        .await
+        .expect("column probe");
+        assert_eq!(present, 1);
+    }
+
+    #[tokio::test]
+    async fn sqlite_execute_sql_script_supports_multi_add_column_if_not_exists() {
+        let config = sdkwork_database_config::DatabaseConfig {
+            engine: DatabaseEngine::Sqlite,
+            url: "sqlite::memory:".to_string(),
+            max_connections: 1,
+            ..Default::default()
+        };
+        let pool = sdkwork_database_sqlx::create_pool_from_config(config)
+            .await
+            .expect("sqlite pool");
+
+        execute_sql_script(
+            &pool,
+            r#"
+            CREATE TABLE probe (id TEXT PRIMARY KEY);
+            ALTER TABLE probe
+              ADD COLUMN IF NOT EXISTS module_id TEXT NOT NULL DEFAULT 'legacy',
+              ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';
+            "#,
+        )
+        .await
+        .expect("multi conditional add column should be supported");
+
+        let sqlite = pool.as_sqlite().expect("sqlite pool");
+        let present = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM pragma_table_info('probe') WHERE name IN ('module_id', 'status')",
+        )
+        .fetch_one(sqlite)
+        .await
+        .expect("column probe");
+        assert_eq!(present, 2);
     }
 
     #[test]

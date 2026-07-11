@@ -14,3 +14,6 @@ hex = "0.4"
 sha2 = "0.10"
 sqlx = { workspace = true, features = ["sqlite", "postgres"] }
 thiserror.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true }
