@@ -15,6 +15,7 @@ tokio = { workspace = true }
 
 # Database
 sqlx = { workspace = true, features = ["sqlite", "postgres", "any"] }
+libsqlite3-sys.workspace = true
 
 # Serialization
 serde = { workspace = true }

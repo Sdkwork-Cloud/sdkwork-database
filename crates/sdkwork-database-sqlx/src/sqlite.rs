@@ -9,6 +9,7 @@ use sdkwork_database_config::{DatabaseConfig, SqliteTempStore};
 
 use crate::error::PoolError;
 use crate::pool::PoolContext;
+use crate::sqlite_decimal::register_decimal_functions;
 
 /// Create a SQLite connection pool from configuration.
 pub async fn create_sqlite_pool(
@@ -33,6 +34,9 @@ pub async fn create_sqlite_pool(
         .acquire_timeout(config.acquire_timeout())
         .idle_timeout(config.idle_timeout())
         .max_lifetime(config.max_lifetime())
+        .after_connect(|connection, _metadata| {
+            Box::pin(async move { register_decimal_functions(connection).await })
+        })
         .connect_with(connect_options)
         .await
         .map_err(PoolError::PoolCreation)?;

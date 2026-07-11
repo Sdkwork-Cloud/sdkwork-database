@@ -29,6 +29,7 @@ async-trait = "0.1"
 
 # Database
 sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls"] }
+libsqlite3-sys = "=0.30.1"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

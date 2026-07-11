@@ -43,6 +43,7 @@ pub mod error;
 pub mod pool;
 pub mod postgres;
 pub mod sqlite;
+pub mod sqlite_decimal;
 
 // Re-export main types at crate root
 pub use builder::PoolBuilder;
