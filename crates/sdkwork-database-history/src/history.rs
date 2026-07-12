@@ -222,6 +222,10 @@ CREATE TABLE IF NOT EXISTS {}database_installation_state (
 /// that have been checked into version control). User-supplied input MUST NOT
 /// be passed to this function — use parameterized queries instead.
 pub async fn execute_sql_script(pool: &DatabasePool, script: &str) -> Result<(), HistoryError> {
+    if script_has_explicit_transaction(script) {
+        return execute_transactional_sql_script(pool, script).await;
+    }
+
     for statement in split_sql_statements(script) {
         if statement.is_empty() {
             continue;
@@ -229,6 +233,109 @@ pub async fn execute_sql_script(pool: &DatabasePool, script: &str) -> Result<(),
         execute_sql(pool, &statement).await?;
     }
     Ok(())
+}
+
+async fn execute_transactional_sql_script(
+    pool: &DatabasePool,
+    script: &str,
+) -> Result<(), HistoryError> {
+    let (prelude, transactional_script) = split_transaction_prelude(script);
+    for statement in split_sql_statements(prelude) {
+        if statement.is_empty() {
+            continue;
+        }
+        execute_sql(pool, &statement).await?;
+    }
+
+    match pool {
+        DatabasePool::Sqlite(sqlite_pool, _) => {
+            let mut connection = sqlite_pool.acquire().await.map_err(|error| {
+                HistoryError::Sql(format!(
+                    "sqlite transactional script connection failed: {error}"
+                ))
+            })?;
+            if let Err(error) = sqlx::raw_sql(transactional_script)
+                .execute(&mut *connection)
+                .await
+            {
+                let rollback = sqlx::raw_sql("ROLLBACK; PRAGMA foreign_keys = ON;")
+                    .execute(&mut *connection)
+                    .await;
+                if rollback.is_err() {
+                    connection.close_on_drop();
+                }
+                return Err(HistoryError::Sql(format!(
+                    "sqlite transactional script execution failed: {error}"
+                )));
+            }
+        }
+        DatabasePool::Postgres(postgres_pool, _) => {
+            let mut connection = postgres_pool.acquire().await.map_err(|error| {
+                HistoryError::Sql(format!(
+                    "postgres transactional script connection failed: {error}"
+                ))
+            })?;
+            if let Err(error) = sqlx::raw_sql(transactional_script)
+                .execute(&mut *connection)
+                .await
+            {
+                if sqlx::query("ROLLBACK")
+                    .execute(&mut *connection)
+                    .await
+                    .is_err()
+                {
+                    connection.close_on_drop();
+                }
+                return Err(HistoryError::Sql(format!(
+                    "postgres transactional script execution failed: {error}"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Return a prelude that must use the normal statement executor (notably
+/// SQLite's compatibility implementation for `ADD COLUMN IF NOT EXISTS`) and
+/// the explicit transaction body that must be sent as one raw batch. SQLite
+/// pragmas are kept with the transaction body so they run on the same
+/// connection as `BEGIN IMMEDIATE`.
+fn split_transaction_prelude(script: &str) -> (&str, &str) {
+    let mut offset = 0;
+    let mut begin_offset = None;
+    let mut pragma_offset = None;
+
+    for segment in script.split_inclusive('\n') {
+        let trimmed = segment.trim();
+        let upper = trimmed.to_ascii_uppercase();
+        if begin_offset.is_none()
+            && (upper == "BEGIN" || upper == "BEGIN;" || upper.starts_with("BEGIN IMMEDIATE"))
+        {
+            begin_offset = Some(offset);
+        }
+        if begin_offset.is_none() && upper.starts_with("PRAGMA FOREIGN_KEYS") {
+            pragma_offset = Some(offset);
+        }
+        offset += segment.len();
+    }
+
+    let transaction_offset = pragma_offset.or(begin_offset).unwrap_or(0);
+    script.split_at(transaction_offset)
+}
+
+fn script_has_explicit_transaction(script: &str) -> bool {
+    let mut has_begin = false;
+    let mut has_commit = false;
+    for line in script.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with("--") {
+            continue;
+        }
+        let upper = line.to_ascii_uppercase();
+        has_begin |= upper == "BEGIN;" || upper == "BEGIN" || upper.starts_with("BEGIN IMMEDIATE");
+        has_commit |= upper == "COMMIT;" || upper == "COMMIT";
+    }
+    has_begin && has_commit
 }
 
 /// Execute a single SQL statement against the pool.
@@ -621,44 +728,60 @@ pub async fn record_migration(
 ) -> Result<(), HistoryError> {
     let engine_name = engine_name_str(engine);
 
-    // Use upsert semantics to handle duplicate inserts gracefully
-    match pool {
-        DatabasePool::Sqlite(sqlite_pool, _) => {
-            // SQLite: INSERT OR IGNORE to skip duplicates
-            sqlx::query(
-                "INSERT OR IGNORE INTO ops_schema_migration_history \
+    // Keep the unique-key race safe without silently accepting a different
+    // checksum.  A duplicate with the same checksum is idempotent; a
+    // duplicate with a changed checksum is an integrity failure that must be
+    // surfaced to the lifecycle caller.
+    let rows_affected = match pool {
+        DatabasePool::Sqlite(sqlite_pool, _) => sqlx::query(
+            "INSERT INTO ops_schema_migration_history \
                  (module_id, version, name, engine, checksum, applied_by, execution_ms) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7)",
-            )
-            .bind(module_id)
-            .bind(version)
-            .bind(name)
-            .bind(engine_name)
-            .bind(checksum)
-            .bind(applied_by)
-            .bind(execution_ms)
-            .execute(sqlite_pool)
-            .await
-            .map_err(|e| HistoryError::Migration(format!("record_migration: {e}")))?;
-        }
-        DatabasePool::Postgres(pg_pool, _) => {
-            // PostgreSQL: ON CONFLICT DO NOTHING
-            sqlx::query(
-                "INSERT INTO ops_schema_migration_history \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7) \
+                 ON CONFLICT(module_id, version, engine) DO NOTHING",
+        )
+        .bind(module_id)
+        .bind(version)
+        .bind(name)
+        .bind(engine_name)
+        .bind(checksum)
+        .bind(applied_by)
+        .bind(execution_ms)
+        .execute(sqlite_pool)
+        .await
+        .map_err(|e| HistoryError::Migration(format!("record_migration: {e}")))?
+        .rows_affected(),
+        DatabasePool::Postgres(pg_pool, _) => sqlx::query(
+            "INSERT INTO ops_schema_migration_history \
                  (module_id, version, name, engine, checksum, applied_by, execution_ms) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7) \
                  ON CONFLICT (module_id, version, engine) DO NOTHING",
-            )
-            .bind(module_id)
-            .bind(version)
-            .bind(name)
-            .bind(engine_name)
-            .bind(checksum)
-            .bind(applied_by)
-            .bind(execution_ms)
-            .execute(pg_pool)
-            .await
-            .map_err(|e| HistoryError::Migration(format!("record_migration: {e}")))?;
+        )
+        .bind(module_id)
+        .bind(version)
+        .bind(name)
+        .bind(engine_name)
+        .bind(checksum)
+        .bind(applied_by)
+        .bind(execution_ms)
+        .execute(pg_pool)
+        .await
+        .map_err(|e| HistoryError::Migration(format!("record_migration: {e}")))?
+        .rows_affected(),
+    };
+
+    if rows_affected == 0 {
+        match migration_checksum(pool, module_id, version, engine).await? {
+            Some(existing_checksum) if existing_checksum == checksum => {}
+            Some(existing_checksum) => {
+                return Err(HistoryError::Migration(format!(
+                    "checksum_mismatch for migration {version}: applied={existing_checksum}, current={checksum}"
+                )));
+            }
+            None => {
+                return Err(HistoryError::Migration(format!(
+                    "migration_history_conflict for migration {version}: unique key conflict without a history row"
+                )));
+            }
         }
     }
     Ok(())
@@ -1171,6 +1294,130 @@ SELECT 1;
     }
 
     #[test]
+    fn detects_only_scripts_with_an_explicit_begin_and_commit() {
+        assert!(script_has_explicit_transaction(
+            "PRAGMA foreign_keys = OFF;\nBEGIN IMMEDIATE;\nCREATE TABLE probe (id INTEGER);\nCOMMIT;"
+        ));
+        assert!(script_has_explicit_transaction(
+            "BEGIN;\nDO $$\nBEGIN\n  PERFORM 1;\nEND $$;\nCOMMIT;"
+        ));
+        assert!(!script_has_explicit_transaction(
+            "DO $$\nBEGIN\n  PERFORM 1;\nEND $$;"
+        ));
+    }
+
+    #[tokio::test]
+    async fn executes_explicit_transaction_script_as_one_raw_batch() {
+        let config = sdkwork_database_config::DatabaseConfig {
+            engine: DatabaseEngine::Sqlite,
+            url: "sqlite::memory:".to_string(),
+            max_connections: 1,
+            ..Default::default()
+        };
+        let pool = sdkwork_database_sqlx::create_pool_from_config(config)
+            .await
+            .expect("sqlite pool");
+
+        execute_sql_script(
+            &pool,
+            "BEGIN IMMEDIATE; CREATE TABLE probe (id INTEGER PRIMARY KEY); INSERT INTO probe VALUES (1); COMMIT;",
+        )
+        .await
+        .expect("transactional script should execute");
+
+        let sqlite = pool.as_sqlite().expect("sqlite pool");
+        let count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM probe")
+            .fetch_one(sqlite)
+            .await
+            .expect("probe count");
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn executes_sqlite_compatibility_prelude_before_transaction_batch() {
+        let config = sdkwork_database_config::DatabaseConfig {
+            engine: DatabaseEngine::Sqlite,
+            url: "sqlite::memory:".to_string(),
+            max_connections: 1,
+            ..Default::default()
+        };
+        let pool = sdkwork_database_sqlx::create_pool_from_config(config)
+            .await
+            .expect("sqlite pool");
+        execute_sql_script(&pool, "CREATE TABLE probe (id INTEGER PRIMARY KEY);")
+            .await
+            .expect("probe table");
+
+        execute_sql_script(
+            &pool,
+            r#"
+ALTER TABLE probe ADD COLUMN IF NOT EXISTS snapshot TEXT;
+ALTER TABLE probe ADD COLUMN IF NOT EXISTS snapshot TEXT;
+PRAGMA foreign_keys = OFF;
+BEGIN IMMEDIATE;
+INSERT INTO probe (id, snapshot) VALUES (1, 'original');
+COMMIT;
+PRAGMA foreign_keys = ON;
+"#,
+        )
+        .await
+        .expect("prelude plus transactional script should execute");
+
+        let sqlite = pool.as_sqlite().expect("sqlite pool");
+        let snapshot = sqlx::query_scalar::<_, String>("SELECT snapshot FROM probe WHERE id = 1")
+            .fetch_one(sqlite)
+            .await
+            .expect("snapshot");
+        assert_eq!(snapshot, "original");
+    }
+
+    #[tokio::test]
+    async fn failed_sqlite_transaction_is_rolled_back_before_pool_reuse() {
+        let config = sdkwork_database_config::DatabaseConfig {
+            engine: DatabaseEngine::Sqlite,
+            url: "sqlite::memory:".to_string(),
+            max_connections: 1,
+            ..Default::default()
+        };
+        let pool = sdkwork_database_sqlx::create_pool_from_config(config)
+            .await
+            .expect("sqlite pool");
+
+        let error = execute_sql_script(
+            &pool,
+            r#"
+PRAGMA foreign_keys = OFF;
+BEGIN IMMEDIATE;
+CREATE TABLE failed_probe (id INTEGER PRIMARY KEY);
+INSERT INTO failed_probe (id) VALUES (1);
+INSERT INTO failed_probe (id) VALUES (1);
+COMMIT;
+PRAGMA foreign_keys = ON;
+"#,
+        )
+        .await
+        .expect_err("duplicate key must abort the transaction");
+        assert!(error
+            .to_string()
+            .contains("transactional script execution failed"));
+
+        let sqlite = pool.as_sqlite().expect("sqlite pool");
+        let table_count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'failed_probe'",
+        )
+        .fetch_one(sqlite)
+        .await
+        .expect("table probe");
+        assert_eq!(table_count, 0, "failed transaction must roll back DDL");
+
+        let foreign_keys = sqlx::query_scalar::<_, i64>("PRAGMA foreign_keys")
+            .fetch_one(sqlite)
+            .await
+            .expect("foreign key pragma");
+        assert_eq!(foreign_keys, 1, "pooled connection must be restored");
+    }
+
+    #[test]
     fn keeps_semicolons_inside_tagged_dollar_quotes() {
         let script = r#"
 DO $body$
@@ -1244,6 +1491,61 @@ SELECT 1;
             .expect("table probe");
             assert_eq!(present, 1, "{table_name} should exist");
         }
+    }
+
+    #[tokio::test]
+    async fn record_migration_rejects_conflicting_checksum_instead_of_ignoring_it() {
+        let config = sdkwork_database_config::DatabaseConfig {
+            engine: DatabaseEngine::Sqlite,
+            url: "sqlite::memory:".to_string(),
+            max_connections: 1,
+            ..Default::default()
+        };
+        let pool = sdkwork_database_sqlx::create_pool_from_config(config)
+            .await
+            .expect("sqlite pool");
+        ensure_history_tables(&pool)
+            .await
+            .expect("history tables should be created");
+
+        record_migration(
+            &pool,
+            "demo",
+            "0001",
+            "create_demo",
+            DatabaseEngine::Sqlite,
+            "checksum-a",
+            1,
+            "test",
+        )
+        .await
+        .expect("first migration record");
+        record_migration(
+            &pool,
+            "demo",
+            "0001",
+            "create_demo",
+            DatabaseEngine::Sqlite,
+            "checksum-a",
+            1,
+            "test",
+        )
+        .await
+        .expect("same checksum is idempotent");
+
+        let error = record_migration(
+            &pool,
+            "demo",
+            "0001",
+            "create_demo",
+            DatabaseEngine::Sqlite,
+            "checksum-b",
+            1,
+            "test",
+        )
+        .await
+        .expect_err("changed checksum must fail");
+        assert!(error.to_string().contains("checksum_mismatch"));
     }
 
     #[tokio::test]

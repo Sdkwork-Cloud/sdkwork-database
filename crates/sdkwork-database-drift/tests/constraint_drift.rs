@@ -106,6 +106,14 @@ CREATE INDEX idx_test1_probe_extra ON test1_probe(label);",
         "expected extra_index drift: {:?}",
         report.diffs
     );
+    assert!(
+        !report
+            .diffs
+            .iter()
+            .any(|diff| diff.code == "missing_constraint"),
+        "table-level UNIQUE constraint should match its SQLite autoindex: {:?}",
+        report.diffs
+    );
 }
 
 #[tokio::test]

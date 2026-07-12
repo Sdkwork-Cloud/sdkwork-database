@@ -149,3 +149,60 @@ async fn baseline_is_skipped_when_anchor_table_already_exists_without_module_his
     .unwrap();
     assert_eq!(expires_at_column_count, 0);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_migrate_calls_are_serialized_by_the_database_lock() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+    write_file(
+        &root.join("database/database.manifest.json"),
+        r#"{
+  "schemaVersion": 1,
+  "kind": "sdkwork.database.module",
+  "moduleId": "concurrent",
+  "serviceCode": "CONCURRENT",
+  "contractVersion": "1.0.0",
+  "paths": {
+    "contract": "contract/schema.yaml",
+    "migrations": "migrations",
+    "seeds": "seeds",
+    "driftPolicy": "drift/policy.yaml"
+  },
+  "lifecycle": { "activeSeedLocales": ["zh-CN"] }
+}"#,
+    );
+    write_file(
+        &root.join("database/migrations/sqlite/0001_create_probe.up.sql"),
+        "CREATE TABLE concurrent_probe (id INTEGER PRIMARY KEY, label TEXT NOT NULL);",
+    );
+
+    let module_a = Arc::new(DefaultDatabaseModule::from_app_root(root).unwrap());
+    let module_b = Arc::new(DefaultDatabaseModule::from_app_root(root).unwrap());
+    let database_path = root.join("concurrent.sqlite");
+    let config = DatabaseConfig {
+        engine: DatabaseEngine::Sqlite,
+        url: format!("sqlite:{}", database_path.display()),
+        max_connections: 1,
+        ..Default::default()
+    };
+    let pool_a = create_pool_from_config(config.clone()).await.unwrap();
+    let pool_b = create_pool_from_config(config).await.unwrap();
+    let orchestrator_a = LifecycleOrchestrator::new(pool_a.clone(), module_a);
+    let orchestrator_b = LifecycleOrchestrator::new(pool_b.clone(), module_b);
+
+    let (result_a, result_b) = tokio::join!(orchestrator_a.migrate(), orchestrator_b.migrate());
+    let applied_a = result_a.unwrap();
+    let applied_b = result_b.unwrap();
+    assert_eq!(applied_a + applied_b, 1);
+
+    let history_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM ops_schema_migration_history WHERE module_id = 'concurrent'",
+    )
+    .fetch_one(pool_a.as_sqlite().unwrap())
+    .await
+    .unwrap();
+    assert_eq!(history_count, 1);
+
+    pool_a.close().await;
+    pool_b.close().await;
+}

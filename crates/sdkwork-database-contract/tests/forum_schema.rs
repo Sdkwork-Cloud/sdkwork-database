@@ -16,7 +16,10 @@ tables:
       - { name: code, type: string(64), required: true }
       - { name: slug, type: string(120), required: true }
     indexes:
-      - { name: idx_forum_space_tenant_status_updated, columns: [tenant_id, status] }
+      - name: idx_forum_space_tenant_status_updated
+        columns: [tenant_id, status]
+        unique: true
+        where: deleted_at IS NULL
 "#;
 
     let contract: SchemaContract = serde_yaml::from_str(yaml).expect("forum schema should parse");
@@ -28,7 +31,32 @@ tables:
     let path = temp.path().join("schema.yaml");
     std::fs::write(&path, yaml).unwrap();
     let indexes = load_expected_indexes(&path).unwrap();
-    assert_eq!(indexes.get("forum_space").unwrap().len(), 1);
+    let index = &indexes.get("forum_space").unwrap()[0];
+    assert_eq!(index.columns, ["tenant_id", "status"]);
+    assert!(index.unique);
+    assert_eq!(index.predicate.as_deref(), Some("deleted_at IS NULL"));
+}
+
+#[test]
+fn index_predicate_alias_is_supported() {
+    let yaml = r#"
+schema_version: 1
+kind: sdkwork.database.schema
+owner: forum
+standard_version: "1.0.0"
+tables:
+  - name: forum_space
+    indexes:
+      - name: idx_forum_space_active
+        columns: [tenant_id, status]
+        predicate: deleted_at IS NULL
+"#;
+
+    let contract: SchemaContract = serde_yaml::from_str(yaml).expect("schema should parse");
+    assert_eq!(
+        contract.tables[0].indexes[0].predicate.as_deref(),
+        Some("deleted_at IS NULL")
+    );
 }
 
 #[test]

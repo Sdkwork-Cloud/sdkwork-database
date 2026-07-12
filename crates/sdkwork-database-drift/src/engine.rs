@@ -1,7 +1,7 @@
 use chrono::Utc;
 use sdkwork_database_contract::{
     load_expected_column_required, load_expected_column_types, load_expected_columns,
-    load_expected_constraints, load_expected_indexes, load_expected_tables, physical_type_matches,
+    load_expected_constraints, load_expected_indexes, load_expected_tables,
 };
 use sdkwork_database_history::{
     file_checksum, list_applied_migration_versions, migration_checksum,
@@ -13,8 +13,11 @@ use std::collections::BTreeMap;
 
 use crate::error::DriftError;
 use crate::introspect::{
-    engine_name, introspect_table_column_details, introspect_table_constraints,
-    introspect_table_indexes, introspect_tables,
+    engine_name, introspect_table_column_details, introspect_table_constraint_details,
+    introspect_table_index_details, introspect_tables,
+};
+use crate::matching::{
+    constraint_is_satisfied, index_is_satisfied, physical_type_matches_for_engine,
 };
 
 /// Known framework history tables that are excluded from drift extra-table detection.
@@ -222,13 +225,27 @@ impl DriftEngine {
                         // type mismatch
                         if let Some(expected_types) = expected_column_types.get(&table_name) {
                             if let Some(logical_type) = expected_types.get(&column.name) {
-                                if !physical_type_matches(logical_type, &column.data_type) {
+                                if !physical_type_matches_for_engine(
+                                    engine,
+                                    logical_type,
+                                    &column.data_type,
+                                ) {
                                     diffs.push(DriftDiff {
                                         code: "type_mismatch".to_string(),
                                         severity: severity_for("type_mismatch", &policy),
                                         message: format!(
                                             "type_mismatch: {table_name}.{} expected={logical_type} actual={}",
                                             column.name, column.data_type
+                                        ),
+                                    });
+                                }
+                                if column.sqlite_rowid_alias {
+                                    diffs.push(DriftDiff {
+                                        code: "sqlite_rowid_alias".to_string(),
+                                        severity: severity_for("sqlite_rowid_alias", &policy),
+                                        message: format!(
+                                            "sqlite_rowid_alias: {table_name}.{} expected={logical_type} actual=INTEGER PRIMARY KEY; SDKWork business ids must be explicitly allocated and bound",
+                                            column.name
                                         ),
                                     });
                                 }
@@ -255,8 +272,14 @@ impl DriftEngine {
             }
 
             // ── Index drift ─────────────────────────────────────────────
+            let live_index_details =
+                if !expected_indexes.is_empty() || !expected_constraints.is_empty() {
+                    introspect_table_index_details(&self.pool).await?
+                } else {
+                    BTreeMap::new()
+                };
+
             if !expected_indexes.is_empty() || !expected_constraints.is_empty() {
-                let live_indexes = introspect_table_indexes(&self.pool).await?;
                 let expected_constraint_names: BTreeMap<String, Vec<String>> = expected_constraints
                     .iter()
                     .map(|(table, constraints)| {
@@ -271,44 +294,67 @@ impl DriftEngine {
                     if policy.ignore_tables.iter().any(|t| t == table_name) {
                         continue;
                     }
-                    let live = live_indexes.get(table_name).cloned().unwrap_or_default();
+                    let live = live_index_details
+                        .get(table_name)
+                        .cloned()
+                        .unwrap_or_default();
                     for index in indexes {
-                        if !live.iter().any(|n| n == &index.name) {
-                            diffs.push(DriftDiff {
+                        match live.iter().find(|live_index| live_index.name == index.name) {
+                            None => diffs.push(DriftDiff {
                                 code: "missing_index".to_string(),
                                 severity: severity_for("missing_index", &policy),
                                 message: format!("missing index: {table_name}.{}", index.name),
-                            });
+                            }),
+                            Some(live_index) if !index_is_satisfied(index, live_index) => {
+                                diffs.push(DriftDiff {
+                                    code: "index_mismatch".to_string(),
+                                    severity: severity_for("index_mismatch", &policy),
+                                    message: format!(
+                                        "index_mismatch: {table_name}.{} expected_columns={:?} actual_columns={:?} expected_unique={} actual_unique={} expected_predicate={:?} actual_predicate={:?}",
+                                        index.name,
+                                        index.columns,
+                                        live_index.columns,
+                                        index.unique,
+                                        live_index.unique,
+                                        index.predicate,
+                                        live_index.predicate
+                                    ),
+                                });
+                            }
+                            Some(_) => {}
                         }
                     }
                 }
 
-                for (table_name, live_index_names) in live_indexes {
-                    if policy.ignore_tables.iter().any(|t| t == &table_name) {
+                for (table_name, live_indexes) in &live_index_details {
+                    if is_framework_table(table_name)
+                        || policy.ignore_tables.iter().any(|t| t == table_name)
+                    {
                         continue;
                     }
                     let expected_idx_names: Vec<String> = expected_indexes
-                        .get(&table_name)
+                        .get(table_name)
                         .map(|idx| idx.iter().map(|i| i.name.clone()).collect())
                         .unwrap_or_default();
                     let expected_cons_names: Vec<String> = expected_constraint_names
-                        .get(&table_name)
+                        .get(table_name)
                         .cloned()
                         .unwrap_or_default();
 
-                    for index_name in live_index_names {
-                        if is_auto_index(&index_name) {
+                    for live_index in live_indexes {
+                        let index_name = &live_index.name;
+                        if is_auto_index(index_name) {
                             continue;
                         }
-                        if expected_idx_names.iter().any(|n| n == &index_name)
-                            || expected_cons_names.iter().any(|n| n == &index_name)
+                        if expected_idx_names.iter().any(|n| n == index_name)
+                            || expected_cons_names.iter().any(|n| n == index_name)
                         {
                             continue;
                         }
                         diffs.push(DriftDiff {
                             code: "extra_index".to_string(),
                             severity: severity_for("extra_index", &policy),
-                            message: format!("extra index: {table_name}.{index_name}"),
+                            message: format!("extra index: {table_name}.{}", live_index.name),
                         });
                     }
                 }
@@ -316,7 +362,7 @@ impl DriftEngine {
 
             // ── Constraint drift ────────────────────────────────────────
             if !expected_constraints.is_empty() {
-                let live_constraints = introspect_table_constraints(&self.pool).await?;
+                let live_constraints = introspect_table_constraint_details(&self.pool).await?;
                 for (table_name, constraints) in &expected_constraints {
                     if policy.ignore_tables.iter().any(|t| t == table_name) {
                         continue;
@@ -325,8 +371,12 @@ impl DriftEngine {
                         .get(table_name)
                         .cloned()
                         .unwrap_or_default();
+                    let live_indexes = live_index_details
+                        .get(table_name)
+                        .cloned()
+                        .unwrap_or_default();
                     for constraint in constraints {
-                        if !live.iter().any(|n| n == &constraint.name) {
+                        if !constraint_is_satisfied(engine, constraint, &live, &live_indexes) {
                             diffs.push(DriftDiff {
                                 code: "missing_constraint".to_string(),
                                 severity: severity_for("missing_constraint", &policy),
@@ -417,6 +467,8 @@ mod tests {
         assert_eq!(default_severity("missing_table"), "error");
         assert_eq!(default_severity("extra_table"), "warn");
         assert_eq!(default_severity("extra_index"), "info");
+        assert_eq!(default_severity("index_mismatch"), "error");
+        assert_eq!(default_severity("sqlite_rowid_alias"), "error");
         assert_eq!(default_severity("checksum_mismatch"), "error");
     }
 }

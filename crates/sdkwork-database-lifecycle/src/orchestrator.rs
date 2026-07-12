@@ -2,9 +2,9 @@ use std::time::Instant;
 
 use sdkwork_database_config::claw_database::resolve_unified_postgres_schema;
 use sdkwork_database_history::{
-    ensure_history_tables, execute_sql_script, fetch_installation_state, file_checksum,
-    is_seed_applied, list_applied_migration_versions, migration_checksum, record_migration,
-    record_seed, upsert_installation_state,
+    acquire_migration_lock, ensure_history_tables, execute_sql_script, fetch_installation_state,
+    file_checksum, is_seed_applied, list_applied_migration_versions, migration_checksum,
+    record_migration, record_seed, upsert_installation_state,
 };
 use sdkwork_database_spi::{
     types::{
@@ -40,12 +40,18 @@ impl LifecycleOrchestrator {
     }
 
     pub async fn init(&self) -> Result<(), LifecycleError> {
+        let module_id = self.module.descriptor().module_id.clone();
+        let _lock = acquire_migration_lock(&self.pool, &module_id).await?;
+        self.init_locked().await
+    }
+
+    async fn init_locked(&self) -> Result<(), LifecycleError> {
         self.emit_state_change(LifecycleState::Uninitialized, LifecycleState::Bootstrapped)
             .await?;
         // Use default "ops_" prefix for backward compatibility
         // TODO(ARCH-1): In integrated mode, use module-specific prefix
         ensure_history_tables(&self.pool).await?;
-        self.apply_baseline_if_needed().await?;
+        self.apply_baseline_if_needed_locked().await?;
         let descriptor = self.module.descriptor();
         upsert_installation_state(
             &self.pool,
@@ -60,6 +66,12 @@ impl LifecycleOrchestrator {
     }
 
     pub async fn apply_baseline_if_needed(&self) -> Result<usize, LifecycleError> {
+        let module_id = self.module.descriptor().module_id.clone();
+        let _lock = acquire_migration_lock(&self.pool, &module_id).await?;
+        self.apply_baseline_if_needed_locked().await
+    }
+
+    async fn apply_baseline_if_needed_locked(&self) -> Result<usize, LifecycleError> {
         let manifest = DatabaseManifest::from_file(self.module.manifest_path())?;
         let strategy = manifest
             .baseline_strategy
@@ -123,6 +135,7 @@ impl LifecycleOrchestrator {
             execute_sql_script(&self.pool, &sql).await?;
             applied_count += 1;
         }
+
         Ok(applied_count)
     }
 
@@ -159,11 +172,17 @@ impl LifecycleOrchestrator {
     }
 
     pub async fn migrate(&self) -> Result<usize, LifecycleError> {
+        let module_id = self.module.descriptor().module_id.clone();
+        let _lock = acquire_migration_lock(&self.pool, &module_id).await?;
+        self.migrate_locked().await
+    }
+
+    async fn migrate_locked(&self) -> Result<usize, LifecycleError> {
         self.emit_state_change(LifecycleState::Bootstrapped, LifecycleState::Migrating)
             .await?;
         // Use default "ops_" prefix for backward compatibility
         ensure_history_tables(&self.pool).await?;
-        let mut applied_count = self.apply_baseline_if_needed().await?;
+        let mut applied_count = self.apply_baseline_if_needed_locked().await?;
         let descriptor = self.module.descriptor();
         let engine = self.pool.engine();
         let migrations = self.module.list_migrations(engine).await?;
@@ -239,6 +258,16 @@ impl LifecycleOrchestrator {
     }
 
     pub async fn seed(
+        &self,
+        locale: &LocaleTag,
+        profile: &SeedProfile,
+    ) -> Result<usize, LifecycleError> {
+        let module_id = self.module.descriptor().module_id.clone();
+        let _lock = acquire_migration_lock(&self.pool, &module_id).await?;
+        self.seed_locked(locale, profile).await
+    }
+
+    async fn seed_locked(
         &self,
         locale: &LocaleTag,
         profile: &SeedProfile,
@@ -363,9 +392,11 @@ impl LifecycleOrchestrator {
         locale: &LocaleTag,
         profile: &SeedProfile,
     ) -> Result<(usize, usize), LifecycleError> {
-        self.init().await?;
-        let migrations = self.migrate().await?;
-        let seeds = self.seed(locale, profile).await?;
+        let module_id = self.module.descriptor().module_id.clone();
+        let _lock = acquire_migration_lock(&self.pool, &module_id).await?;
+        self.init_locked().await?;
+        let migrations = self.migrate_locked().await?;
+        let seeds = self.seed_locked(locale, profile).await?;
         self.emit_state_change(LifecycleState::Seeded, LifecycleState::Operational)
             .await?;
         Ok((migrations, seeds))

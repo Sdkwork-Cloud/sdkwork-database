@@ -53,6 +53,10 @@ pub struct ConstraintContract {
     pub constraint_type: String,
     #[serde(default)]
     pub columns: Vec<String>,
+    #[serde(default)]
+    pub references_table: Option<String>,
+    #[serde(default)]
+    pub references_columns: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -69,6 +73,10 @@ pub struct IndexContract {
     pub name: String,
     #[serde(default)]
     pub columns: Vec<String>,
+    #[serde(default)]
+    pub unique: bool,
+    #[serde(default, rename = "where", alias = "predicate")]
+    pub predicate: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
