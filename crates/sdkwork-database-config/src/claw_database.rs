@@ -159,8 +159,34 @@ pub fn postgres_url_with_search_path(base_url: &str, service_prefix: &str) -> St
         return base_url.to_string();
     }
 
+    if postgres_url_has_search_path(base_url, schema.as_str()) {
+        return base_url.to_string();
+    }
+
     let option_value = format!("-c search_path={schema},public");
     append_postgres_url_query_param(base_url, "options", &option_value)
+}
+
+fn postgres_url_has_search_path(base_url: &str, schema: &str) -> bool {
+    let Some((_, query_and_fragment)) = base_url.split_once('?') else {
+        return false;
+    };
+    let query = query_and_fragment
+        .split_once('#')
+        .map_or(query_and_fragment, |(query, _)| query);
+    let expected = format!("search_path={schema},public");
+
+    query.split('&').any(|parameter| {
+        let Some((key, value)) = parameter.split_once('=') else {
+            return false;
+        };
+        key.eq_ignore_ascii_case("options")
+            && percent_decode_uri_component(value).is_some_and(|decoded| {
+                decoded
+                    .split_ascii_whitespace()
+                    .any(|option| option == expected)
+            })
+    })
 }
 
 fn append_postgres_url_query_param(base_url: &str, key: &str, value: &str) -> String {
@@ -180,6 +206,36 @@ fn percent_encode_uri_component(value: &str) -> String {
         }
     }
     encoded
+}
+
+fn percent_decode_uri_component(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'+' => decoded.push(b' '),
+            b'%' if index + 2 < bytes.len() => {
+                let high = decode_hex_digit(bytes[index + 1])?;
+                let low = decode_hex_digit(bytes[index + 2])?;
+                decoded.push((high << 4) | low);
+                index += 2;
+            }
+            b'%' => return None,
+            byte => decoded.push(byte),
+        }
+        index += 1;
+    }
+    String::from_utf8(decoded).ok()
+}
+
+fn decode_hex_digit(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
 }
 
 /// Resolve the PostgreSQL schema used for application tables in the unified claw profile.
@@ -305,6 +361,78 @@ mod tests {
             "SDKWORK_IAM",
         );
         assert!(url.contains("options=-c%20search_path%3Dsdkwork_ai_dev%2Cpublic"));
+    }
+
+    #[test]
+    #[serial]
+    fn postgres_url_with_search_path_is_idempotent_for_same_schema() {
+        let _guard = EnvGuard::set(&[
+            ("SDKWORK_IAM_DATABASE_SCHEMA", None),
+            ("SDKWORK_CLAW_DATABASE_SCHEMA", Some("sdkwork_ai_dev")),
+            ("SDKWORK_DATABASE_SCHEMA", None),
+        ]);
+
+        let base =
+            "postgresql://sdkwork_ai_dev:sdkworkdev123@127.0.0.1:5432/sdkwork_ai_dev?sslmode=disable";
+        let once = postgres_url_with_search_path(base, "SDKWORK_IAM");
+        let twice = postgres_url_with_search_path(&once, "SDKWORK_IAM");
+
+        assert_eq!(once, twice);
+        assert_eq!(twice.matches("options=").count(), 1);
+    }
+
+    #[test]
+    #[serial]
+    fn repeated_iam_and_single_commerce_normalization_share_authority() {
+        let _guard = EnvGuard::set(&[
+            ("SDKWORK_IAM_DATABASE_SCHEMA", None),
+            ("SDKWORK_COMMERCE_DATABASE_SCHEMA", None),
+            ("SDKWORK_CLAW_DATABASE_SCHEMA", Some("sdkwork_ai_dev")),
+            ("SDKWORK_DATABASE_SCHEMA", None),
+        ]);
+
+        let base =
+            "postgresql://sdkwork_ai_dev:sdkworkdev123@127.0.0.1:5432/sdkwork_ai_dev?sslmode=disable";
+        let iam_bootstrap_url = postgres_url_with_search_path(base, "SDKWORK_IAM");
+        let iam_pool_url = postgres_url_with_search_path(&iam_bootstrap_url, "SDKWORK_IAM");
+        let commerce_pool_url = postgres_url_with_search_path(base, "SDKWORK_COMMERCE");
+
+        assert_eq!(iam_pool_url, commerce_pool_url);
+    }
+
+    #[test]
+    #[serial]
+    fn postgres_url_with_search_path_recognizes_plus_encoded_options() {
+        let _guard = EnvGuard::set(&[
+            ("SDKWORK_IAM_DATABASE_SCHEMA", None),
+            ("SDKWORK_CLAW_DATABASE_SCHEMA", Some("sdkwork_ai_dev")),
+            ("SDKWORK_DATABASE_SCHEMA", None),
+        ]);
+
+        let already_normalized =
+            "postgresql://db.internal:5432/app?options=-c+search_path%3Dsdkwork_ai_dev%2Cpublic";
+        assert_eq!(
+            postgres_url_with_search_path(already_normalized, "SDKWORK_IAM"),
+            already_normalized
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn postgres_url_with_search_path_appends_when_schema_differs() {
+        let _guard = EnvGuard::set(&[
+            ("SDKWORK_IAM_DATABASE_SCHEMA", None),
+            ("SDKWORK_CLAW_DATABASE_SCHEMA", Some("sdkwork_ai_dev")),
+            ("SDKWORK_DATABASE_SCHEMA", None),
+        ]);
+
+        let existing =
+            "postgresql://db.internal:5432/app?options=-c%20search_path%3Dother_schema%2Cpublic";
+        let normalized = postgres_url_with_search_path(existing, "SDKWORK_IAM");
+
+        assert_ne!(normalized, existing);
+        assert!(normalized.contains("search_path%3Dother_schema%2Cpublic"));
+        assert!(normalized.contains("search_path%3Dsdkwork_ai_dev%2Cpublic"));
     }
 
     #[test]

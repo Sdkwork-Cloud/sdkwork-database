@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "kind": "sdkwork.component.spec",
+  "component": {
+    "name": "sdkwork-database-id",
+    "displayName": "SDKWork Database Snowflake ID",
+    "version": "0.1.0",
+    "type": "rust-crate",
+    "root": "sdkwork-database/crates/sdkwork-database-id",
+    "domain": "platform",
+    "capability": "database-id",
+    "languages": ["rust"],
+    "generated": false,
+    "manifests": ["Cargo.toml"]
+  },
+  "canonicalSpecs": [
+    {"file": "CODE_STYLE_SPEC.md", "path": "../../../sdkwork-specs/CODE_STYLE_SPEC.md", "purpose": "Authored source style."},
+    {"file": "NAMING_SPEC.md", "path": "../../../sdkwork-specs/NAMING_SPEC.md", "purpose": "Canonical names."},
+    {"file": "RUST_CODE_SPEC.md", "path": "../../../sdkwork-specs/RUST_CODE_SPEC.md", "purpose": "Rust structure and boundaries."},
+    {"file": "DATABASE_SPEC.md", "path": "../../../sdkwork-specs/DATABASE_SPEC.md", "purpose": "Database and ID semantics."},
+    {"file": "SECURITY_SPEC.md", "path": "../../../sdkwork-specs/SECURITY_SPEC.md", "purpose": "Fail-closed and secret handling."},
+    {"file": "TEST_SPEC.md", "path": "../../../sdkwork-specs/TEST_SPEC.md", "purpose": "Verification requirements."}
+  ],
+  "contracts": {
+    "layerRole": "backend-provider",
+    "publicExports": ["."],
+    "providedPorts": [{"name": "snowflakeGenerator", "export": "."}, {"name": "nodeLeaseAllocator", "export": "."}],
+    "requiredPorts": [{"name": "sharedDatabasePool", "export": "."}],
+    "runtimeEntrypoints": ["SnowflakeNodeAllocator::allocate_process_generator"],
+    "routeManifest": null,
+    "sdkClients": [],
+    "sdkDependencies": [],
+    "dependencyApiExports": [],
+    "dependencyApiSurfaces": [],
+    "events": [],
+    "configKeys": ["SDKWORK_NODE_HOSTNAME", "SDKWORK_NODE_INSTANCE_ID"]
+  },
+  "verification": {
+    "commands": ["cargo test -p sdkwork-database-id", "cargo test -p sdkwork-id-core"]
+  }
+}

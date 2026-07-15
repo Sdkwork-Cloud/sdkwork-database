@@ -1,35 +1,38 @@
-//! Database-backed Snowflake node_id allocation with idempotent restart.
+//! Database-backed Snowflake node_id allocation with fenced leases.
 //!
 //! This module provides automatic, collision-free allocation of Snowflake
 //! node IDs (0..1023) from a shared database table. Each process registers
-//! its identity and receives a stable node ID that is reclaimed on restart,
-//! eliminating the need for manual `SDKWORK_*_ID_NODE_ID` configuration.
+//! its identity and receives a leased node ID, eliminating the need for manual
+//! `SDKWORK_*_ID_NODE_ID` configuration.
 //!
 //! # How it works
 //!
 //! 1. On startup, the allocator computes a **process identity** from
 //!    `service_name + hostname + optional instance_id`.
-//! 2. It checks the `sdkwork_node_registry` table for an existing **active
-//!    lease** matching that identity. If found, the same `node_id` is
-//!    reclaimed (idempotent restart).
-//! 3. If no active lease exists, the smallest available `node_id` is
-//!    allocated and inserted.
+//! 2. It finds the smallest node ID with no active lease.
+//! 3. The candidate is inserted or atomically replaces an expired lease with
+//!    a new ownership token and fencing version.
 //! 4. A background heartbeat task periodically renews the lease. If the
 //!    process crashes, the lease expires after the TTL and the `node_id`
 //!    becomes available for reuse.
 //!
-//! # Idempotency guarantees
+//! # Safety guarantees
 //!
-//! - Same `service_name` + same host → same `node_id` on restart.
-//! - In Kubernetes, each pod has a unique hostname, so each pod gets a
-//!   distinct, stable `node_id`.
+//! - An active lease is never reclaimed solely by matching identity.
+//! - In Kubernetes, each pod can acquire a distinct node from the shared
+//!   registry and retain it until its lease expires.
 //! - For multiple instances on the same host, set
 //!   `SDKWORK_NODE_INSTANCE_ID` to disambiguate.
 
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{collections::hash_map::DefaultHasher, hash::Hash, hash::Hasher};
 
 use sdkwork_database_sqlx::DatabasePool;
-use sdkwork_id_core::{max_snowflake_node_id, SnowflakeIdError, SnowflakeIdGenerator};
+use sdkwork_id_core::{
+    max_snowflake_node_id, SnowflakeIdError, SnowflakeIdGenerator, SnowflakeLeaseGuard,
+};
+use tokio::sync::OnceCell;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
@@ -40,7 +43,7 @@ const DEFAULT_LEASE_TTL: Duration = Duration::from_secs(60);
 const DEFAULT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
 
 /// Maximum retry attempts when racing with concurrent allocators.
-const MAX_ALLOCATION_RETRIES: usize = 8;
+const MAX_ALLOCATION_RETRIES: usize = 64;
 
 // ---------------------------------------------------------------------------
 // Error types
@@ -49,10 +52,14 @@ const MAX_ALLOCATION_RETRIES: usize = 8;
 /// Errors that can occur during node_id allocation.
 #[derive(Debug)]
 pub enum NodeAllocatorError {
+    /// Lease timing or identity configuration is invalid.
+    InvalidConfig(String),
     /// A database query failed.
     Database(String),
     /// All 1024 node IDs are in use.
     AllNodeIdsExhausted,
+    /// Another allocator won the candidate row race.
+    AllocationConflict,
     /// The Snowflake generator rejected the allocated node_id.
     Snowflake(SnowflakeIdError),
     /// The database pool was not available.
@@ -62,8 +69,10 @@ pub enum NodeAllocatorError {
 impl std::fmt::Display for NodeAllocatorError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::InvalidConfig(msg) => write!(f, "invalid node allocator config: {msg}"),
             Self::Database(msg) => write!(f, "node allocator database error: {msg}"),
             Self::AllNodeIdsExhausted => write!(f, "all 1024 snowflake node IDs are exhausted"),
+            Self::AllocationConflict => write!(f, "snowflake node allocation conflict"),
             Self::Snowflake(err) => write!(f, "snowflake init failed: {err:?}"),
             Self::PoolUnavailable => write!(f, "database pool is unavailable"),
         }
@@ -136,30 +145,52 @@ impl NodeAllocatorConfig {
 /// While this value is alive, a background heartbeat task keeps the lease
 /// renewed. When dropped, the heartbeat task is aborted and the lease will
 /// expire after its TTL, allowing another process to claim the node_id.
+#[derive(Clone)]
 pub struct NodeLease {
+    inner: Arc<NodeLeaseInner>,
+}
+
+struct NodeLeaseInner {
     node_id: u16,
+    lease_version: i64,
+    lease_guard: Arc<SnowflakeLeaseGuard>,
     heartbeat_handle: Option<JoinHandle<()>>,
 }
 
 impl NodeLease {
     /// The allocated node_id (0..1023).
     pub fn node_id(&self) -> u16 {
-        self.node_id
+        self.inner.node_id
+    }
+
+    /// Returns whether this process still owns the node lease.
+    pub fn is_healthy(&self) -> bool {
+        self.inner
+            .lease_guard
+            .allows(current_epoch_millis().max(0) as u64)
+    }
+
+    /// Monotonic fencing version assigned by the registry row.
+    pub fn lease_version(&self) -> i64 {
+        self.inner.lease_version
     }
 }
 
-impl Drop for NodeLease {
+impl Drop for NodeLeaseInner {
     fn drop(&mut self) {
         if let Some(handle) = self.heartbeat_handle.take() {
             handle.abort();
         }
+        self.lease_guard.fence();
     }
 }
 
 impl std::fmt::Debug for NodeLease {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NodeLease")
-            .field("node_id", &self.node_id)
+            .field("node_id", &self.inner.node_id)
+            .field("lease_version", &self.inner.lease_version)
+            .field("healthy", &self.is_healthy())
             .finish_non_exhaustive()
     }
 }
@@ -170,16 +201,17 @@ impl std::fmt::Debug for NodeLease {
 
 /// Database-backed Snowflake node_id allocator.
 ///
-/// Provides idempotent, collision-free allocation of Snowflake node IDs
+/// Provides fenced, collision-free allocation of Snowflake node IDs
 /// from a shared `sdkwork_node_registry` table.
 pub struct SnowflakeNodeAllocator;
 
+static PROCESS_GENERATOR: OnceCell<(SnowflakeIdGenerator, NodeLease, u64)> = OnceCell::const_new();
+
 impl SnowflakeNodeAllocator {
-    /// Allocate or reclaim a node_id from the database.
+    /// Allocate a node_id from the database.
     ///
-    /// This method is **idempotent**: if the same `instance_identity` has
-    /// an active (non-expired) lease, the same `node_id` is reclaimed.
-    /// Otherwise, the smallest available `node_id` is allocated.
+    /// The smallest available node is allocated. Active leases are never
+    /// reclaimed based on identity alone.
     ///
     /// A background heartbeat task is started to keep the lease alive.
     /// The task is aborted when the returned [`NodeLease`] is dropped.
@@ -187,15 +219,33 @@ impl SnowflakeNodeAllocator {
         pool: &DatabasePool,
         config: &NodeAllocatorConfig,
     ) -> Result<NodeLease, NodeAllocatorError> {
+        validate_config(config)?;
         ensure_registry_table(pool).await?;
 
         let pid = std::process::id() as i64;
         let started_at_ms = current_epoch_millis();
+        let lease_token = sdkwork_id_core::uuid_v4();
+        let ttl_ms = i64::try_from(config.lease_ttl.as_millis())
+            .expect("allocator config validates lease TTL");
+        let valid_until_ms = started_at_ms.checked_add(ttl_ms).ok_or_else(|| {
+            NodeAllocatorError::InvalidConfig("lease expiry overflow".to_string())
+        })?;
+        let lease_guard = Arc::new(SnowflakeLeaseGuard::new(valid_until_ms as u64));
 
         for attempt in 0..MAX_ALLOCATION_RETRIES {
-            match try_allocate_or_reclaim(pool, config, pid, started_at_ms).await {
-                Ok(node_id) => {
-                    let heartbeat_handle = start_heartbeat(pool.clone(), node_id, config);
+            match try_allocate_or_replace_expired(pool, config, pid, started_at_ms, &lease_token)
+                .await
+            {
+                Ok((node_id, lease_version)) => {
+                    lease_guard.renew_for(config.lease_ttl);
+                    let heartbeat_handle = start_heartbeat(
+                        pool.clone(),
+                        node_id,
+                        config,
+                        lease_token.clone(),
+                        lease_version,
+                        lease_guard.clone(),
+                    );
                     info!(
                         node_id,
                         service = %config.service_name,
@@ -203,19 +253,31 @@ impl SnowflakeNodeAllocator {
                         "snowflake node_id allocated"
                     );
                     return Ok(NodeLease {
-                        node_id,
-                        heartbeat_handle: Some(heartbeat_handle),
+                        inner: Arc::new(NodeLeaseInner {
+                            node_id,
+                            lease_version,
+                            lease_guard,
+                            heartbeat_handle: Some(heartbeat_handle),
+                        }),
                     });
                 }
-                Err(NodeAllocatorError::Database(_)) if attempt + 1 < MAX_ALLOCATION_RETRIES => {
-                    let backoff = Duration::from_millis(50u64 << attempt.min(5));
+                Err(NodeAllocatorError::AllocationConflict)
+                    if attempt + 1 < MAX_ALLOCATION_RETRIES =>
+                {
+                    let token_hash = lease_token
+                        .bytes()
+                        .fold(0u64, |hash, byte| hash.wrapping_mul(131) ^ u64::from(byte));
+                    let jitter = token_hash.rotate_left(attempt as u32 % 63) & 31;
+                    let backoff = Duration::from_millis((2u64 << attempt.min(5)) + jitter);
                     warn!(attempt, ?backoff, "node allocation retry");
                     tokio::time::sleep(backoff).await;
                 }
                 Err(err) => return Err(err),
             }
         }
-        Err(NodeAllocatorError::AllNodeIdsExhausted)
+        Err(NodeAllocatorError::Database(
+            "concurrent node allocation retry budget exhausted".to_string(),
+        ))
     }
 
     /// Convenience: allocate a node_id and create a [`SnowflakeIdGenerator`].
@@ -227,8 +289,33 @@ impl SnowflakeNodeAllocator {
         config: &NodeAllocatorConfig,
     ) -> Result<(SnowflakeIdGenerator, NodeLease), NodeAllocatorError> {
         let lease = Self::allocate(pool, config).await?;
-        let generator = SnowflakeIdGenerator::new(lease.node_id())?;
+        let generator = SnowflakeIdGenerator::new(lease.node_id())?
+            .with_lease_guard(lease.inner.lease_guard.clone());
         Ok((generator, lease))
+    }
+
+    /// Return the single shared Snowflake generator for this operating-system
+    /// process. All embedded modules must use this API so they consume one
+    /// node lease and one sequence state. Separate processes still allocate
+    /// independent nodes through the shared registry.
+    pub async fn allocate_process_generator(
+        pool: &DatabasePool,
+        config: &NodeAllocatorConfig,
+    ) -> Result<(SnowflakeIdGenerator, NodeLease), NodeAllocatorError> {
+        let authority_fingerprint = database_authority_fingerprint(pool);
+        let pair = PROCESS_GENERATOR
+            .get_or_try_init(|| async {
+                let (generator, lease) = Self::allocate_generator(pool, config).await?;
+                Ok::<_, NodeAllocatorError>((generator, lease, authority_fingerprint))
+            })
+            .await?;
+        if pair.2 != authority_fingerprint {
+            return Err(NodeAllocatorError::InvalidConfig(
+                "all process modules must use the same Snowflake node registry authority"
+                    .to_string(),
+            ));
+        }
+        Ok((pair.0.clone(), pair.1.clone()))
     }
 
     /// High-level: create a pool from environment, allocate, and return
@@ -263,22 +350,84 @@ impl SnowflakeNodeAllocator {
             .await
             .map_err(|e| NodeAllocatorError::Database(format!("pool creation: {e}")))?;
         let _ = service_name; // used in config, kept for API clarity
-        Self::allocate_generator(&pool, &config).await
+        Self::allocate_process_generator(&pool, &config).await
     }
+}
+
+fn validate_config(config: &NodeAllocatorConfig) -> Result<(), NodeAllocatorError> {
+    if config.service_name.trim().is_empty() || config.instance_identity.trim().is_empty() {
+        return Err(NodeAllocatorError::InvalidConfig(
+            "service name and instance identity must be non-empty".to_string(),
+        ));
+    }
+    if config.heartbeat_interval.is_zero() {
+        return Err(NodeAllocatorError::InvalidConfig(
+            "heartbeat interval must be greater than zero".to_string(),
+        ));
+    }
+    if config.heartbeat_interval >= config.lease_ttl {
+        return Err(NodeAllocatorError::InvalidConfig(
+            "heartbeat interval must be shorter than lease TTL".to_string(),
+        ));
+    }
+    i64::try_from(config.lease_ttl.as_millis()).map_err(|_| {
+        NodeAllocatorError::InvalidConfig("lease TTL exceeds signed millisecond range".to_string())
+    })?;
+    Ok(())
+}
+
+fn database_authority_fingerprint(pool: &DatabasePool) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    normalized_database_authority(&pool.config().url).hash(&mut hasher);
+    hasher.finish()
+}
+
+fn normalized_database_authority(url: &str) -> String {
+    let Some(scheme_end) = url.find("://") else {
+        return url.to_string();
+    };
+    let (scheme, remainder) = url.split_at(scheme_end + 3);
+    let authority_end = remainder
+        .find(|character| matches!(character, '/' | '?' | '#'))
+        .unwrap_or(remainder.len());
+    let authority = &remainder[..authority_end];
+    let authority_without_credentials = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    format!(
+        "{scheme}{authority_without_credentials}{}",
+        &remainder[authority_end..]
+    )
 }
 
 // ---------------------------------------------------------------------------
 // Internal: table creation
 // ---------------------------------------------------------------------------
 
-/// DDL that works for both PostgreSQL and SQLite.
-const CREATE_TABLE_SQL: &str = concat!(
+const CREATE_POSTGRES_TABLE_SQL: &str = concat!(
     "CREATE TABLE IF NOT EXISTS sdkwork_node_registry (\n",
-    "    node_id INTEGER PRIMARY KEY,\n",
+    "    node_id INTEGER PRIMARY KEY CHECK (node_id BETWEEN 0 AND 1023),\n",
+    "    service_name TEXT NOT NULL,\n",
+    "    instance_identity TEXT NOT NULL,\n",
+    "    hostname TEXT NOT NULL,\n",
+    "    pid BIGINT NOT NULL,\n",
+    "    lease_token TEXT NOT NULL,\n",
+    "    lease_version BIGINT NOT NULL DEFAULT 1,\n",
+    "    started_at_ms BIGINT NOT NULL,\n",
+    "    last_heartbeat_at_ms BIGINT NOT NULL,\n",
+    "    expires_at_ms BIGINT NOT NULL\n",
+    ")"
+);
+
+const CREATE_SQLITE_TABLE_SQL: &str = concat!(
+    "CREATE TABLE IF NOT EXISTS sdkwork_node_registry (\n",
+    "    node_id INTEGER PRIMARY KEY CHECK (node_id BETWEEN 0 AND 1023),\n",
     "    service_name TEXT NOT NULL,\n",
     "    instance_identity TEXT NOT NULL,\n",
     "    hostname TEXT NOT NULL,\n",
     "    pid INTEGER NOT NULL,\n",
+    "    lease_token TEXT NOT NULL,\n",
+    "    lease_version INTEGER NOT NULL DEFAULT 1,\n",
     "    started_at_ms INTEGER NOT NULL,\n",
     "    last_heartbeat_at_ms INTEGER NOT NULL,\n",
     "    expires_at_ms INTEGER NOT NULL\n",
@@ -288,18 +437,123 @@ const CREATE_TABLE_SQL: &str = concat!(
 async fn ensure_registry_table(pool: &DatabasePool) -> Result<(), NodeAllocatorError> {
     match pool {
         DatabasePool::Postgres(pg, _) => {
-            sqlx::query(CREATE_TABLE_SQL)
+            sqlx::query(CREATE_POSTGRES_TABLE_SQL)
                 .execute(pg)
                 .await
                 .map_err(|e| NodeAllocatorError::Database(format!("create table: {e}")))?;
+            ensure_postgres_registry_schema(pg).await?;
         }
         DatabasePool::Sqlite(sqlite, _) => {
-            sqlx::query(CREATE_TABLE_SQL)
+            sqlx::query(CREATE_SQLITE_TABLE_SQL)
                 .execute(sqlite)
                 .await
                 .map_err(|e| NodeAllocatorError::Database(format!("create table: {e}")))?;
+            ensure_sqlite_column(
+                sqlite,
+                "lease_token",
+                "ALTER TABLE sdkwork_node_registry ADD COLUMN lease_token TEXT NOT NULL DEFAULT ''",
+            )
+            .await?;
+            ensure_sqlite_column(
+                sqlite,
+                "lease_version",
+                "ALTER TABLE sdkwork_node_registry ADD COLUMN lease_version INTEGER NOT NULL DEFAULT 0",
+            )
+            .await?;
         }
     }
+    Ok(())
+}
+
+async fn ensure_postgres_registry_schema(pool: &sqlx::PgPool) -> Result<(), NodeAllocatorError> {
+    let columns: Vec<(String, String, Option<String>)> = sqlx::query_as(
+        "SELECT column_name, data_type, column_default FROM information_schema.columns \
+         WHERE table_schema = current_schema() AND table_name = 'sdkwork_node_registry'",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| NodeAllocatorError::Database(format!("inspect registry columns: {e}")))?;
+
+    let requires_widening = [
+        "pid",
+        "started_at_ms",
+        "last_heartbeat_at_ms",
+        "expires_at_ms",
+    ]
+    .into_iter()
+    .any(|name| {
+        columns
+            .iter()
+            .find(|column| column.0 == name)
+            .is_some_and(|column| column.1 != "bigint")
+    });
+    if requires_widening {
+        sqlx::query(
+            "ALTER TABLE sdkwork_node_registry \
+             ALTER COLUMN pid TYPE BIGINT, \
+             ALTER COLUMN started_at_ms TYPE BIGINT, \
+             ALTER COLUMN last_heartbeat_at_ms TYPE BIGINT, \
+             ALTER COLUMN expires_at_ms TYPE BIGINT",
+        )
+        .execute(pool)
+        .await
+        .map_err(|e| NodeAllocatorError::Database(format!("widen registry columns: {e}")))?;
+    }
+
+    let lease_version_requires_widening = columns
+        .iter()
+        .find(|column| column.0 == "lease_version")
+        .is_some_and(|column| column.1 != "bigint");
+    if lease_version_requires_widening {
+        sqlx::query("ALTER TABLE sdkwork_node_registry ALTER COLUMN lease_version TYPE BIGINT")
+            .execute(pool)
+            .await
+            .map_err(|e| NodeAllocatorError::Database(format!("widen lease version: {e}")))?;
+    }
+
+    let lease_token_column = columns.iter().find(|column| column.0 == "lease_token");
+    let has_lease_token = lease_token_column.is_some();
+    let has_lease_version = columns.iter().any(|column| column.0 == "lease_version");
+    if !has_lease_token || !has_lease_version {
+        sqlx::query(
+            "ALTER TABLE sdkwork_node_registry \
+             ADD COLUMN IF NOT EXISTS lease_token TEXT NOT NULL DEFAULT '', \
+             ADD COLUMN IF NOT EXISTS lease_version BIGINT NOT NULL DEFAULT 0",
+        )
+        .execute(pool)
+        .await
+        .map_err(|e| NodeAllocatorError::Database(format!("expand registry lease columns: {e}")))?;
+    }
+    if !has_lease_token || lease_token_column.is_some_and(|column| column.2.is_some()) {
+        // Prevent pre-fencing binaries from silently creating empty-token
+        // leases after the schema has been upgraded.
+        sqlx::query("ALTER TABLE sdkwork_node_registry ALTER COLUMN lease_token DROP DEFAULT")
+            .execute(pool)
+            .await
+            .map_err(|e| {
+                NodeAllocatorError::Database(format!("secure lease token default: {e}"))
+            })?;
+    }
+    Ok(())
+}
+
+async fn ensure_sqlite_column(
+    pool: &sqlx::SqlitePool,
+    column_name: &str,
+    alter_sql: &str,
+) -> Result<(), NodeAllocatorError> {
+    let columns: Vec<(i64, String, String, i64, Option<String>, i64)> =
+        sqlx::query_as("PRAGMA table_info(sdkwork_node_registry)")
+            .fetch_all(pool)
+            .await
+            .map_err(|e| NodeAllocatorError::Database(format!("inspect registry columns: {e}")))?;
+    if columns.iter().any(|column| column.1 == column_name) {
+        return Ok(());
+    }
+    sqlx::query(alter_sql)
+        .execute(pool)
+        .await
+        .map_err(|e| NodeAllocatorError::Database(format!("expand registry column: {e}")))?;
     Ok(())
 }
 
@@ -307,22 +561,25 @@ async fn ensure_registry_table(pool: &DatabasePool) -> Result<(), NodeAllocatorE
 // Internal: allocation logic
 // ---------------------------------------------------------------------------
 
-/// Try to allocate or reclaim a node_id. Returns the node_id on success.
-async fn try_allocate_or_reclaim(
+/// Try to allocate a node_id or replace an expired row. Returns the node_id on success.
+async fn try_allocate_or_replace_expired(
     pool: &DatabasePool,
     config: &NodeAllocatorConfig,
     pid: i64,
     started_at_ms: i64,
-) -> Result<u16, NodeAllocatorError> {
+    lease_token: &str,
+) -> Result<(u16, i64), NodeAllocatorError> {
     let now_ms = current_epoch_millis();
-    let expires_at_ms = now_ms + config.lease_ttl.as_millis() as i64;
+    let expires_at_ms = now_ms
+        .checked_add(config.lease_ttl.as_millis().try_into().map_err(|_| {
+            NodeAllocatorError::Database("lease TTL exceeds signed millisecond range".to_string())
+        })?)
+        .ok_or_else(|| NodeAllocatorError::Database("lease expiry overflow".to_string()))?;
 
-    // 1. Try to reclaim an existing active lease for this instance identity.
-    if let Some(node_id) = try_reclaim(pool, &config.instance_identity, now_ms).await? {
-        return Ok(node_id);
-    }
-
-    // 2. Find the smallest available node_id.
+    // Never reclaim an active lease solely because its human-readable
+    // instance identity matches. During rolling restart or split brain, both
+    // processes may be alive. Only an expired row may be replaced with a new
+    // unguessable lease token.
     let active_ids = fetch_active_node_ids(pool, now_ms).await?;
     let candidate = find_first_available(&active_ids);
 
@@ -332,102 +589,26 @@ async fn try_allocate_or_reclaim(
 
     // 3. Try to INSERT. On conflict (race with another process), the caller
     //    will retry.
-    let inserted = try_insert(
+    let inserted_version = try_insert(
         pool,
         node_id,
         &config.service_name,
         &config.instance_identity,
         &config.hostname,
         pid,
+        lease_token,
         started_at_ms,
         now_ms,
         expires_at_ms,
     )
     .await?;
 
-    if inserted {
-        Ok(node_id)
+    if let Some(lease_version) = inserted_version {
+        Ok((node_id, lease_version))
     } else {
         // Conflict – caller retries.
-        Err(NodeAllocatorError::Database(
-            "node_id insert conflict, retrying".to_string(),
-        ))
+        Err(NodeAllocatorError::AllocationConflict)
     }
-}
-
-/// Attempt to reclaim an existing active lease for the given identity.
-async fn try_reclaim(
-    pool: &DatabasePool,
-    instance_identity: &str,
-    now_ms: i64,
-) -> Result<Option<u16>, NodeAllocatorError> {
-    let expires_at_ms = now_ms + DEFAULT_LEASE_TTL.as_millis() as i64;
-    let started_at_ms = now_ms;
-    let pid = std::process::id() as i64;
-
-    match pool {
-        DatabasePool::Postgres(pg, _) => {
-            // Try to find an existing active lease.
-            let existing: Option<(i64,)> = sqlx::query_as(
-                "SELECT node_id FROM sdkwork_node_registry \
-                 WHERE instance_identity = $1 AND expires_at_ms > $2",
-            )
-            .bind(instance_identity)
-            .bind(now_ms)
-            .fetch_optional(pg)
-            .await
-            .map_err(|e| NodeAllocatorError::Database(format!("reclaim query: {e}")))?;
-
-            if let Some((node_id,)) = existing {
-                // Reclaim: update the lease with new pid and timestamps.
-                let _ = sqlx::query(
-                    "UPDATE sdkwork_node_registry \
-                     SET pid = $1, started_at_ms = $2, last_heartbeat_at_ms = $3, expires_at_ms = $4 \
-                     WHERE node_id = $5 AND instance_identity = $6",
-                )
-                .bind(pid)
-                .bind(started_at_ms)
-                .bind(now_ms)
-                .bind(expires_at_ms)
-                .bind(node_id)
-                .bind(instance_identity)
-                .execute(pg)
-                .await
-                .map_err(|e| NodeAllocatorError::Database(format!("reclaim update: {e}")))?;
-                return Ok(Some(node_id as u16));
-            }
-        }
-        DatabasePool::Sqlite(sqlite, _) => {
-            let existing: Option<(i64,)> = sqlx::query_as(
-                "SELECT node_id FROM sdkwork_node_registry \
-                 WHERE instance_identity = ? AND expires_at_ms > ?",
-            )
-            .bind(instance_identity)
-            .bind(now_ms)
-            .fetch_optional(sqlite)
-            .await
-            .map_err(|e| NodeAllocatorError::Database(format!("reclaim query: {e}")))?;
-
-            if let Some((node_id,)) = existing {
-                let _ = sqlx::query(
-                    "UPDATE sdkwork_node_registry \
-                     SET pid = ?, started_at_ms = ?, last_heartbeat_at_ms = ?, expires_at_ms = ? \
-                     WHERE node_id = ? AND instance_identity = ?",
-                )
-                .bind(pid)
-                .bind(started_at_ms)
-                .bind(now_ms)
-                .bind(expires_at_ms)
-                .bind(node_id)
-                .bind(instance_identity)
-                .execute(sqlite)
-                .await
-                .map_err(|e| NodeAllocatorError::Database(format!("reclaim update: {e}")))?;
-                return Ok(Some(node_id as u16));
-            }
-        }
-    }
-    Ok(None)
 }
 
 /// Fetch all active (non-expired) node_ids.
@@ -437,28 +618,49 @@ async fn fetch_active_node_ids(
 ) -> Result<Vec<u16>, NodeAllocatorError> {
     match pool {
         DatabasePool::Postgres(pg, _) => {
-            let rows: Vec<(i64,)> = sqlx::query_as(
-                "SELECT node_id FROM sdkwork_node_registry \
-                 WHERE expires_at_ms > $1 ORDER BY node_id",
+            let rows: Vec<(i32, i64, i64)> = sqlx::query_as(
+                "WITH clock AS MATERIALIZED (\
+                     SELECT (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT AS now_ms\
+                 ) \
+                 SELECT registry.node_id, registry.expires_at_ms, clock.now_ms \
+                 FROM sdkwork_node_registry registry CROSS JOIN clock \
+                 ORDER BY registry.node_id",
             )
-            .bind(now_ms)
             .fetch_all(pg)
             .await
             .map_err(|e| NodeAllocatorError::Database(format!("fetch active ids: {e}")))?;
-            Ok(rows.into_iter().map(|(id,)| id as u16).collect())
+            validate_and_filter_active_node_ids(
+                rows.iter().map(|row| (i64::from(row.0), row.1)).collect(),
+                rows.first().map_or(now_ms, |row| row.2),
+            )
         }
         DatabasePool::Sqlite(sqlite, _) => {
-            let rows: Vec<(i64,)> = sqlx::query_as(
-                "SELECT node_id FROM sdkwork_node_registry \
-                 WHERE expires_at_ms > ? ORDER BY node_id",
+            let rows: Vec<(i64, i64)> = sqlx::query_as(
+                "SELECT node_id, expires_at_ms FROM sdkwork_node_registry ORDER BY node_id",
             )
-            .bind(now_ms)
             .fetch_all(sqlite)
             .await
             .map_err(|e| NodeAllocatorError::Database(format!("fetch active ids: {e}")))?;
-            Ok(rows.into_iter().map(|(id,)| id as u16).collect())
+            validate_and_filter_active_node_ids(rows, now_ms)
         }
     }
+}
+
+fn validate_and_filter_active_node_ids(
+    rows: Vec<(i64, i64)>,
+    now_ms: i64,
+) -> Result<Vec<u16>, NodeAllocatorError> {
+    let max = i64::from(max_snowflake_node_id());
+    rows.into_iter()
+        .filter_map(|(id, expires_at_ms)| {
+            if !(0..=max).contains(&id) {
+                return Some(Err(NodeAllocatorError::Database(format!(
+                    "registry contains out-of-range node_id {id}; expected 0..={max}"
+                ))));
+            }
+            (expires_at_ms > now_ms).then_some(Ok(id as u16))
+        })
+        .collect()
 }
 
 /// Find the smallest node_id (0..=max) not present in `active_ids`.
@@ -481,7 +683,7 @@ fn find_first_available(active_ids: &[u16]) -> Option<u16> {
     }
 }
 
-/// Try to INSERT a new lease. Returns `true` if inserted, `false` on conflict.
+/// Try to insert a new lease. Returns its fencing version or `None` on conflict.
 #[allow(clippy::too_many_arguments)]
 async fn try_insert(
     pool: &DatabasePool,
@@ -490,73 +692,79 @@ async fn try_insert(
     instance_identity: &str,
     hostname: &str,
     pid: i64,
+    lease_token: &str,
     started_at_ms: i64,
     now_ms: i64,
     expires_at_ms: i64,
-) -> Result<bool, NodeAllocatorError> {
-    let rows_affected = match pool {
+) -> Result<Option<i64>, NodeAllocatorError> {
+    match pool {
         DatabasePool::Postgres(pg, _) => {
-            let result = sqlx::query(
-                "INSERT INTO sdkwork_node_registry \
+            let row: Option<(i64,)> = sqlx::query_as(
+                "WITH clock AS (SELECT (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT AS now_ms) \
+                 INSERT INTO sdkwork_node_registry \
                  (node_id, service_name, instance_identity, hostname, pid, \
-                  started_at_ms, last_heartbeat_at_ms, expires_at_ms) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
+                  lease_token, lease_version, started_at_ms, last_heartbeat_at_ms, expires_at_ms) \
+                 SELECT $1, $2, $3, $4, $5, $6, 1, clock.now_ms, clock.now_ms, clock.now_ms + $7 FROM clock \
                  ON CONFLICT (node_id) DO UPDATE SET \
                      service_name = $2, \
                      instance_identity = $3, \
                      hostname = $4, \
                      pid = $5, \
-                     started_at_ms = $6, \
-                     last_heartbeat_at_ms = $7, \
-                     expires_at_ms = $8 \
-                 WHERE sdkwork_node_registry.expires_at_ms <= $9",
+                     lease_token = $6, \
+                     lease_version = sdkwork_node_registry.lease_version + 1, \
+                     started_at_ms = EXCLUDED.started_at_ms, \
+                     last_heartbeat_at_ms = EXCLUDED.last_heartbeat_at_ms, \
+                     expires_at_ms = EXCLUDED.expires_at_ms \
+                 WHERE sdkwork_node_registry.expires_at_ms <= EXCLUDED.last_heartbeat_at_ms \
+                 RETURNING lease_version",
             )
             .bind(node_id as i64)
             .bind(service_name)
             .bind(instance_identity)
             .bind(hostname)
             .bind(pid)
-            .bind(started_at_ms)
-            .bind(now_ms)
-            .bind(expires_at_ms)
-            .bind(now_ms)
-            .execute(pg)
+            .bind(lease_token)
+            .bind(expires_at_ms.saturating_sub(now_ms))
+            .fetch_optional(pg)
             .await
             .map_err(|e| NodeAllocatorError::Database(format!("insert: {e}")))?;
-            result.rows_affected()
+            Ok(row.map(|value| value.0))
         }
         DatabasePool::Sqlite(sqlite, _) => {
-            let result = sqlx::query(
+            let row: Option<(i64,)> = sqlx::query_as(
                 "INSERT INTO sdkwork_node_registry \
                  (node_id, service_name, instance_identity, hostname, pid, \
-                  started_at_ms, last_heartbeat_at_ms, expires_at_ms) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
+                  lease_token, lease_version, started_at_ms, last_heartbeat_at_ms, expires_at_ms) \
+                 VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?) \
                  ON CONFLICT (node_id) DO UPDATE SET \
                      service_name = excluded.service_name, \
                      instance_identity = excluded.instance_identity, \
                      hostname = excluded.hostname, \
                      pid = excluded.pid, \
+                     lease_token = excluded.lease_token, \
+                     lease_version = sdkwork_node_registry.lease_version + 1, \
                      started_at_ms = excluded.started_at_ms, \
                      last_heartbeat_at_ms = excluded.last_heartbeat_at_ms, \
                      expires_at_ms = excluded.expires_at_ms \
-                 WHERE sdkwork_node_registry.expires_at_ms <= ?",
+                 WHERE sdkwork_node_registry.expires_at_ms <= ? \
+                 RETURNING lease_version",
             )
             .bind(node_id as i64)
             .bind(service_name)
             .bind(instance_identity)
             .bind(hostname)
             .bind(pid)
+            .bind(lease_token)
             .bind(started_at_ms)
             .bind(now_ms)
             .bind(expires_at_ms)
             .bind(now_ms)
-            .execute(sqlite)
+            .fetch_optional(sqlite)
             .await
             .map_err(|e| NodeAllocatorError::Database(format!("insert: {e}")))?;
-            result.rows_affected()
+            Ok(row.map(|value| value.0))
         }
-    };
-    Ok(rows_affected > 0)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -568,18 +776,62 @@ fn start_heartbeat(
     pool: DatabasePool,
     node_id: u16,
     config: &NodeAllocatorConfig,
+    lease_token: String,
+    lease_version: i64,
+    lease_guard: Arc<SnowflakeLeaseGuard>,
 ) -> JoinHandle<()> {
     let interval = config.heartbeat_interval;
     let ttl = config.lease_ttl;
+    let ttl_ms = i64::try_from(ttl.as_millis()).expect("allocator config validates lease TTL");
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(interval);
+        let mut last_success_ms = current_epoch_millis();
         ticker.tick().await; // skip immediate first tick
         loop {
             ticker.tick().await;
             let now_ms = current_epoch_millis();
-            let expires_at_ms = now_ms + ttl.as_millis() as i64;
-            if let Err(e) = renew_lease(&pool, node_id, now_ms, expires_at_ms).await {
-                warn!(node_id, error = %e, "heartbeat renewal failed");
+            let Some(expires_at_ms) = ttl
+                .as_millis()
+                .try_into()
+                .ok()
+                .and_then(|ttl_ms: i64| now_ms.checked_add(ttl_ms))
+            else {
+                lease_guard.fence();
+                warn!(
+                    node_id,
+                    "heartbeat lease expiry overflow; fencing generator"
+                );
+                break;
+            };
+            match renew_lease(
+                &pool,
+                node_id,
+                &lease_token,
+                lease_version,
+                now_ms,
+                expires_at_ms,
+            )
+            .await
+            {
+                Ok(true) => {
+                    last_success_ms = now_ms;
+                    lease_guard.renew_for(ttl);
+                }
+                Ok(false) => {
+                    lease_guard.fence();
+                    warn!(node_id, "snowflake lease ownership lost; fencing generator");
+                    break;
+                }
+                Err(e) => {
+                    // Keep serving during transient DB errors, but fence once
+                    // the old lease can have expired.
+                    if now_ms.saturating_sub(last_success_ms) >= ttl_ms {
+                        lease_guard.fence();
+                        warn!(node_id, error = %e, "snowflake lease expired while heartbeat failed");
+                        break;
+                    }
+                    warn!(node_id, error = %e, "heartbeat renewal failed");
+                }
             }
         }
     })
@@ -589,37 +841,47 @@ fn start_heartbeat(
 async fn renew_lease(
     pool: &DatabasePool,
     node_id: u16,
+    lease_token: &str,
+    lease_version: i64,
     now_ms: i64,
     expires_at_ms: i64,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     match pool {
         DatabasePool::Postgres(pg, _) => {
-            sqlx::query(
-                "UPDATE sdkwork_node_registry \
-                 SET last_heartbeat_at_ms = $1, expires_at_ms = $2 \
-                 WHERE node_id = $3",
+            let result = sqlx::query(
+                "WITH clock AS (SELECT (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT AS now_ms) \
+                 UPDATE sdkwork_node_registry registry \
+                 SET last_heartbeat_at_ms = clock.now_ms, expires_at_ms = clock.now_ms + $1 \
+                 FROM clock \
+                 WHERE registry.node_id = $2 AND registry.lease_token = $3 AND registry.lease_version = $4 \
+                   AND registry.expires_at_ms > clock.now_ms",
             )
-            .bind(now_ms)
-            .bind(expires_at_ms)
+            .bind(expires_at_ms.saturating_sub(now_ms))
             .bind(node_id as i64)
+            .bind(lease_token)
+            .bind(lease_version)
             .execute(pg)
             .await
             .map_err(|e| e.to_string())?;
-            Ok(())
+            Ok(result.rows_affected() == 1)
         }
         DatabasePool::Sqlite(sqlite, _) => {
-            sqlx::query(
+            let result = sqlx::query(
                 "UPDATE sdkwork_node_registry \
                  SET last_heartbeat_at_ms = ?, expires_at_ms = ? \
-                 WHERE node_id = ?",
+                 WHERE node_id = ? AND lease_token = ? AND lease_version = ? \
+                   AND expires_at_ms > ?",
             )
             .bind(now_ms)
             .bind(expires_at_ms)
             .bind(node_id as i64)
+            .bind(lease_token)
+            .bind(lease_version)
+            .bind(now_ms)
             .execute(sqlite)
             .await
             .map_err(|e| e.to_string())?;
-            Ok(())
+            Ok(result.rows_affected() == 1)
         }
     }
 }
@@ -651,7 +913,7 @@ fn resolve_hostname() -> String {
     "unknown".to_string()
 }
 
-/// Resolve a stable instance identity for idempotent lease reclamation.
+/// Resolve a stable identity for observability and lease diagnostics.
 ///
 /// Priority:
 /// 1. `SDKWORK_NODE_INSTANCE_ID` – explicit per-instance identifier
@@ -696,7 +958,7 @@ mod tests {
             engine: DatabaseEngine::Sqlite,
             url: "sqlite::memory:".to_string(),
             mode: DeploymentMode::Standalone,
-            max_connections: 4,
+            max_connections: 1,
             ..Default::default()
         };
         create_pool_from_config(config).await.unwrap()
@@ -724,6 +986,20 @@ mod tests {
         assert_eq!(find_first_available(&all), None);
     }
 
+    #[test]
+    fn authority_fingerprint_normalization_ignores_database_credentials() {
+        assert_eq!(
+            normalized_database_authority(
+                "postgresql://alice:secret@db.internal:5432/app?options=search_path%3Dpublic"
+            ),
+            "postgresql://db.internal:5432/app?options=search_path%3Dpublic"
+        );
+        assert_eq!(
+            normalized_database_authority("sqlite:///var/lib/sdkwork/router.sqlite"),
+            "sqlite:///var/lib/sdkwork/router.sqlite"
+        );
+    }
+
     #[tokio::test]
     async fn allocate_creates_table_and_returns_valid_node_id() {
         let pool = create_sqlite_pool().await;
@@ -736,7 +1012,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn allocate_is_idempotent_on_reclaim() {
+    async fn active_lease_is_not_reclaimed_by_same_identity() {
         let pool = create_sqlite_pool().await;
         let config = NodeAllocatorConfig::from_service_name("idempotent-test")
             .with_lease_ttl(Duration::from_secs(300))
@@ -749,11 +1025,12 @@ mod tests {
         let node1 = lease1.node_id();
         drop(lease1); // heartbeat stops, but lease is still active (TTL 300s).
 
-        // Second allocation with same identity should reclaim the same node_id.
+        // A still-valid lease must not be reclaimed: doing so would allow two
+        // live processes to emit IDs with the same node and duplicate sequence.
         let lease2 = SnowflakeNodeAllocator::allocate(&pool, &config)
             .await
             .unwrap();
-        assert_eq!(lease2.node_id(), node1, "should reclaim same node_id");
+        assert_ne!(lease2.node_id(), node1, "active lease must remain fenced");
         drop(lease2);
         pool.close().await;
     }
@@ -762,9 +1039,9 @@ mod tests {
     async fn allocate_assigns_different_ids_to_different_services() {
         let pool = create_sqlite_pool().await;
         let config_a = NodeAllocatorConfig::from_service_name("service-a")
-            .with_heartbeat_interval(Duration::from_secs(120));
+            .with_heartbeat_interval(Duration::from_secs(30));
         let config_b = NodeAllocatorConfig::from_service_name("service-b")
-            .with_heartbeat_interval(Duration::from_secs(120));
+            .with_heartbeat_interval(Duration::from_secs(30));
 
         let lease_a = SnowflakeNodeAllocator::allocate(&pool, &config_a)
             .await
@@ -785,7 +1062,7 @@ mod tests {
 
         // Create the table first (allocate() would do this, but we need it
         // for our manual insert of an expired lease).
-        sqlx::query(CREATE_TABLE_SQL)
+        sqlx::query(CREATE_SQLITE_TABLE_SQL)
             .execute(pool.as_sqlite().unwrap())
             .await
             .unwrap();
@@ -794,14 +1071,16 @@ mod tests {
         sqlx::query(
             "INSERT INTO sdkwork_node_registry \
              (node_id, service_name, instance_identity, hostname, pid, \
-              started_at_ms, last_heartbeat_at_ms, expires_at_ms) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+              lease_token, lease_version, started_at_ms, last_heartbeat_at_ms, expires_at_ms) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(0i64)
         .bind("old-service")
         .bind("old-service:unknown:0")
         .bind("unknown")
         .bind(9999i64)
+        .bind("expired-token")
+        .bind(1i64)
         .bind(1000i64)
         .bind(1000i64)
         .bind(1001i64) // expired
@@ -811,11 +1090,12 @@ mod tests {
 
         // New allocation should be able to use node_id 0.
         let config = NodeAllocatorConfig::from_service_name("new-service")
-            .with_heartbeat_interval(Duration::from_secs(120));
+            .with_heartbeat_interval(Duration::from_secs(30));
         let lease = SnowflakeNodeAllocator::allocate(&pool, &config)
             .await
             .unwrap();
         assert_eq!(lease.node_id(), 0);
+        assert_eq!(lease.lease_version(), 2);
         drop(lease);
         pool.close().await;
     }
@@ -824,7 +1104,7 @@ mod tests {
     async fn allocate_generator_returns_working_generator() {
         let pool = create_sqlite_pool().await;
         let config = NodeAllocatorConfig::from_service_name("gen-test")
-            .with_heartbeat_interval(Duration::from_secs(120));
+            .with_heartbeat_interval(Duration::from_secs(30));
 
         let (generator, lease) = SnowflakeNodeAllocator::allocate_generator(&pool, &config)
             .await
@@ -837,5 +1117,150 @@ mod tests {
 
         drop(lease);
         pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn concurrent_allocators_receive_distinct_nodes() {
+        let pool = create_sqlite_pool().await;
+        let mut tasks = tokio::task::JoinSet::new();
+        for index in 0..32 {
+            let pool = pool.clone();
+            tasks.spawn(async move {
+                let config = NodeAllocatorConfig::from_service_name(&format!("service-{index}"));
+                SnowflakeNodeAllocator::allocate(&pool, &config).await
+            });
+        }
+
+        let mut leases = Vec::new();
+        while let Some(result) = tasks.join_next().await {
+            leases.push(result.unwrap().unwrap());
+        }
+        let unique: std::collections::HashSet<_> = leases.iter().map(NodeLease::node_id).collect();
+        assert_eq!(unique.len(), leases.len());
+        drop(leases);
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn ownership_token_change_fences_generator() {
+        let pool = create_sqlite_pool().await;
+        let config = NodeAllocatorConfig::from_service_name("fencing-test")
+            .with_lease_ttl(Duration::from_secs(2))
+            .with_heartbeat_interval(Duration::from_millis(20));
+        let (generator, lease) = SnowflakeNodeAllocator::allocate_generator(&pool, &config)
+            .await
+            .unwrap();
+
+        sqlx::query("UPDATE sdkwork_node_registry SET lease_token = ? WHERE node_id = ?")
+            .bind("stolen-token")
+            .bind(i64::from(lease.node_id()))
+            .execute(pool.as_sqlite().unwrap())
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(60)).await;
+
+        assert!(!lease.is_healthy());
+        assert_eq!(
+            generator.generate(),
+            Err(SnowflakeIdError::LeaseUnavailable)
+        );
+        drop(lease);
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn legacy_sqlite_registry_is_expanded_without_data_loss() {
+        let pool = create_sqlite_pool().await;
+        sqlx::query(
+            "CREATE TABLE sdkwork_node_registry (\
+             node_id INTEGER PRIMARY KEY, service_name TEXT NOT NULL, \
+             instance_identity TEXT NOT NULL, hostname TEXT NOT NULL, pid INTEGER NOT NULL, \
+             started_at_ms INTEGER NOT NULL, last_heartbeat_at_ms INTEGER NOT NULL, \
+             expires_at_ms INTEGER NOT NULL)",
+        )
+        .execute(pool.as_sqlite().unwrap())
+        .await
+        .unwrap();
+
+        let config = NodeAllocatorConfig::from_service_name("migration-test");
+        let lease = SnowflakeNodeAllocator::allocate(&pool, &config)
+            .await
+            .unwrap();
+        let columns: Vec<(i64, String, String, i64, Option<String>, i64)> =
+            sqlx::query_as("PRAGMA table_info(sdkwork_node_registry)")
+                .fetch_all(pool.as_sqlite().unwrap())
+                .await
+                .unwrap();
+        assert!(columns.iter().any(|column| column.1 == "lease_token"));
+        assert!(columns.iter().any(|column| column.1 == "lease_version"));
+        drop(lease);
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn corrupted_expired_node_id_is_rejected_before_allocation() {
+        let pool = create_sqlite_pool().await;
+        sqlx::query(
+            "CREATE TABLE sdkwork_node_registry (\
+             node_id INTEGER PRIMARY KEY, service_name TEXT NOT NULL, \
+             instance_identity TEXT NOT NULL, hostname TEXT NOT NULL, pid INTEGER NOT NULL, \
+             started_at_ms INTEGER NOT NULL, last_heartbeat_at_ms INTEGER NOT NULL, \
+             expires_at_ms INTEGER NOT NULL)",
+        )
+        .execute(pool.as_sqlite().unwrap())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO sdkwork_node_registry \
+             (node_id, service_name, instance_identity, hostname, pid, \
+              started_at_ms, last_heartbeat_at_ms, expires_at_ms) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(-1i64)
+        .bind("corrupt")
+        .bind("corrupt")
+        .bind("unknown")
+        .bind(1i64)
+        .bind(1i64)
+        .bind(1i64)
+        .bind(1i64)
+        .execute(pool.as_sqlite().unwrap())
+        .await
+        .unwrap();
+
+        let error = SnowflakeNodeAllocator::allocate(
+            &pool,
+            &NodeAllocatorConfig::from_service_name("corruption-test"),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("out-of-range node_id"));
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn process_allocator_shares_one_generator_and_lease() {
+        let pool = create_sqlite_pool().await;
+        let config = NodeAllocatorConfig::from_service_name("process-shared-test");
+        let (first, first_lease) =
+            SnowflakeNodeAllocator::allocate_process_generator(&pool, &config)
+                .await
+                .unwrap();
+        let (second, second_lease) =
+            SnowflakeNodeAllocator::allocate_process_generator(&pool, &config)
+                .await
+                .unwrap();
+
+        assert_eq!(first.node_id(), second.node_id());
+        assert_eq!(first_lease.node_id(), second_lease.node_id());
+        assert_eq!(first_lease.lease_version(), second_lease.lease_version());
+        let timestamp = sdkwork_id_core::current_time_millis().unwrap();
+        let id1 = first.generate_at(timestamp).unwrap();
+        let id2 = second.generate_at(timestamp).unwrap();
+        assert!(id2 > id1);
+        assert!(first_lease.is_healthy());
+        assert!(second_lease.is_healthy());
+        drop(second_lease);
+        drop(first_lease);
     }
 }
