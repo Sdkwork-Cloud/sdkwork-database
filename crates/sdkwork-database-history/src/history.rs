@@ -1075,6 +1075,12 @@ enum SqlSplitState {
 /// - PostgreSQL E'' escape strings
 /// - Line comments (`--`)
 /// - Block comments (`/* ... */`)
+///
+/// UTF-8 safety: the byte-level scan is safe because all SQL delimiter
+/// characters (`;`, `'`, `"`, `-`, `/`, `$`, `E`, `*`, `\n`) are ASCII
+/// (single-byte in UTF-8). Non-ASCII bytes are always in the catch-all
+/// branch and are pushed via `push_script_char` which preserves the full
+/// multi-byte UTF-8 character.
 fn split_sql_statements(script: &str) -> Vec<String> {
     let mut statements = Vec::new();
     let mut current = String::new();
@@ -1091,38 +1097,38 @@ fn split_sql_statements(script: &str) -> Vec<String> {
             SqlSplitState::Normal => {
                 // Line comment `--`
                 if ch == '-' && peek(bytes, index) == Some('-') {
-                    push_char(&mut current, ch);
-                    push_char(&mut current, '-');
+                    current.push('-');
+                    current.push('-');
                     index += 2;
                     state = SqlSplitState::LineComment;
                     continue;
                 }
                 // Block comment `/*`
                 if ch == '/' && peek(bytes, index) == Some('*') {
-                    push_char(&mut current, ch);
-                    push_char(&mut current, '*');
+                    current.push('/');
+                    current.push('*');
                     index += 2;
                     state = SqlSplitState::BlockComment;
                     continue;
                 }
                 // E'' escape string (PostgreSQL)
                 if ch == 'E' && peek(bytes, index) == Some('\'') {
-                    push_char(&mut current, 'E');
-                    push_char(&mut current, '\'');
+                    current.push('E');
+                    current.push('\'');
                     index += 2;
                     state = SqlSplitState::SingleQuoted;
                     continue;
                 }
                 // Single quote
                 if ch == '\'' {
-                    push_char(&mut current, ch);
+                    current.push(ch);
                     index += 1;
                     state = SqlSplitState::SingleQuoted;
                     continue;
                 }
                 // Double quote
                 if ch == '"' {
-                    push_char(&mut current, ch);
+                    current.push(ch);
                     index += 1;
                     state = SqlSplitState::DoubleQuoted;
                     continue;
@@ -1137,7 +1143,7 @@ fn split_sql_statements(script: &str) -> Vec<String> {
                         state = SqlSplitState::DollarQuoted;
                         continue;
                     }
-                    push_char(&mut current, ch);
+                    current.push(ch);
                     index += 1;
                     continue;
                 }
@@ -1148,41 +1154,38 @@ fn split_sql_statements(script: &str) -> Vec<String> {
                     index += 1;
                     continue;
                 }
-                push_char(&mut current, ch);
-                index += 1;
+                push_script_char(&mut current, script, &mut index);
             }
             SqlSplitState::SingleQuoted => {
                 if ch == '\'' {
                     if peek(bytes, index) == Some('\'') {
                         // escaped quote ''
-                        push_char(&mut current, '\'');
-                        push_char(&mut current, '\'');
+                        current.push('\'');
+                        current.push('\'');
                         index += 2;
                     } else {
-                        push_char(&mut current, '\'');
+                        current.push('\'');
                         index += 1;
                         state = SqlSplitState::Normal;
                     }
                 } else {
-                    push_char(&mut current, ch);
-                    index += 1;
+                    push_script_char(&mut current, script, &mut index);
                 }
             }
             SqlSplitState::DoubleQuoted => {
                 if ch == '"' {
                     if peek(bytes, index) == Some('"') {
                         // escaped quote ""
-                        push_char(&mut current, '"');
-                        push_char(&mut current, '"');
+                        current.push('"');
+                        current.push('"');
                         index += 2;
                     } else {
-                        push_char(&mut current, '"');
+                        current.push('"');
                         index += 1;
                         state = SqlSplitState::Normal;
                     }
                 } else {
-                    push_char(&mut current, ch);
-                    index += 1;
+                    push_script_char(&mut current, script, &mut index);
                 }
             }
             SqlSplitState::DollarQuoted => {
@@ -1196,25 +1199,22 @@ fn split_sql_statements(script: &str) -> Vec<String> {
                     }
                     continue;
                 }
-                push_char(&mut current, ch);
-                index += 1;
+                push_script_char(&mut current, script, &mut index);
             }
             SqlSplitState::LineComment => {
-                push_char(&mut current, ch);
-                index += 1;
+                push_script_char(&mut current, script, &mut index);
                 if ch == '\n' {
                     state = SqlSplitState::Normal;
                 }
             }
             SqlSplitState::BlockComment => {
                 if ch == '*' && peek(bytes, index) == Some('/') {
-                    push_char(&mut current, '*');
-                    push_char(&mut current, '/');
+                    current.push('*');
+                    current.push('/');
                     index += 2;
                     state = SqlSplitState::Normal;
                 } else {
-                    push_char(&mut current, ch);
-                    index += 1;
+                    push_script_char(&mut current, script, &mut index);
                 }
             }
         }
@@ -1253,8 +1253,18 @@ fn push_trimmed(statements: &mut Vec<String>, current: &str) {
     }
 }
 
-fn push_char(s: &mut String, ch: char) {
-    s.push(ch);
+/// Push the character at byte `*index` in `script` into `current`,
+/// correctly handling multi-byte UTF-8 sequences, and advance `*index`
+/// past the character.
+///
+/// This is used in the catch-all branches of `split_sql_statements`
+/// where non-ASCII bytes (continuation bytes of multi-byte UTF-8
+/// characters) must be preserved as-is rather than being interpreted
+/// as individual Latin-1 characters.
+fn push_script_char(current: &mut String, script: &str, index: &mut usize) {
+    let ch = script[*index..].chars().next().expect("valid UTF-8");
+    current.push(ch);
+    *index += ch.len_utf8();
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -1273,6 +1283,65 @@ mod tests {
     fn keeps_semicolons_inside_single_quoted_strings() {
         let stmts = split_sql_statements("SELECT 'a;b'; SELECT 2;");
         assert_eq!(stmts, vec!["SELECT 'a;b';", "SELECT 2;"]);
+    }
+
+    #[test]
+    fn preserves_utf8_multibyte_characters_in_string_literals() {
+        // Chinese characters inside single-quoted string literals must be
+        // preserved exactly — no double-encoding (mojibake).
+        let script = "INSERT INTO plans (name) VALUES ('基础会员'); SELECT 1;";
+        let stmts = split_sql_statements(script);
+        assert_eq!(stmts.len(), 2);
+        assert_eq!(stmts[0], "INSERT INTO plans (name) VALUES ('基础会员');");
+        assert_eq!(stmts[1], "SELECT 1;");
+    }
+
+    #[test]
+    fn preserves_utf8_multibyte_characters_in_identifiers() {
+        // Non-ASCII characters outside string literals (e.g. in comments
+        // or identifiers) must also be preserved.
+        let script = "SELECT 1; -- 中文注释\nSELECT 2;";
+        let stmts = split_sql_statements(script);
+        assert_eq!(stmts.len(), 2);
+        assert!(stmts[0].contains("SELECT 1"));
+        assert!(stmts[1].contains("SELECT 2"));
+        // The comment with Chinese characters should be in the second statement
+        // (it appears after the first `;` separator).
+        assert!(stmts[1].contains("中文注释"));
+    }
+
+    #[tokio::test]
+    async fn executes_sql_script_with_utf8_string_literals() {
+        let config = sdkwork_database_config::DatabaseConfig {
+            engine: DatabaseEngine::Sqlite,
+            url: "sqlite::memory:".to_string(),
+            max_connections: 1,
+            ..Default::default()
+        };
+        let pool = sdkwork_database_sqlx::create_pool_from_config(config)
+            .await
+            .expect("sqlite pool");
+
+        execute_sql_script(
+            &pool,
+            "CREATE TABLE probe (id INTEGER PRIMARY KEY, name TEXT NOT NULL);",
+        )
+        .await
+        .expect("create table");
+
+        execute_sql_script(
+            &pool,
+            "INSERT INTO probe (id, name) VALUES (1, '基础会员');",
+        )
+        .await
+        .expect("insert with Chinese text");
+
+        let sqlite = pool.as_sqlite().expect("sqlite pool");
+        let name = sqlx::query_scalar::<_, String>("SELECT name FROM probe WHERE id = 1")
+            .fetch_one(sqlite)
+            .await
+            .expect("select name");
+        assert_eq!(name, "基础会员");
     }
 
     #[test]

@@ -19,7 +19,7 @@ pub use error::SpiError;
 pub use layout::validate_module_layout;
 pub use manifest::DatabaseManifest;
 pub use module::DefaultDatabaseModule;
-pub use registry::DatabaseModuleRegistry;
+pub use registry::{DatabaseModuleRegistry, DatabaseModuleRegistryBuilder};
 pub use seed_manifest::{SeedManifest, SeedProfileDefinition};
 pub use traits::{
     DatabaseAssetProvider, DatabaseContractProvider, DatabaseLifecycleListener, DatabaseModule,
