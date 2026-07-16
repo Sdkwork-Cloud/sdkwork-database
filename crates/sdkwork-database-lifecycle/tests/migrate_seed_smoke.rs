@@ -150,6 +150,57 @@ async fn baseline_is_skipped_when_anchor_table_already_exists_without_module_his
     assert_eq!(expires_at_column_count, 0);
 }
 
+#[tokio::test]
+async fn failed_baseline_rolls_back_partial_schema_changes() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+
+    write_file(
+        &root.join("database/database.manifest.json"),
+        r#"{
+  "schemaVersion": 1,
+  "kind": "sdkwork.database.module",
+  "moduleId": "atomic_baseline",
+  "serviceCode": "ATOMIC_BASELINE",
+  "contractVersion": "1.0.0",
+  "baselineStrategy": "baseline-plus-migrations",
+  "baselineAnchorTable": "atomic_baseline_probe",
+  "paths": {
+    "contract": "contract/schema.yaml",
+    "migrations": "migrations",
+    "seeds": "seeds",
+    "driftPolicy": "drift/policy.yaml"
+  },
+  "lifecycle": { "activeSeedLocales": ["zh-CN"] }
+}"#,
+    );
+    write_file(
+        &root.join("database/ddl/baseline/sqlite/0001_atomic_baseline.sql"),
+        "CREATE TABLE atomic_baseline_probe (id INTEGER PRIMARY KEY);\n\
+         INSERT INTO table_that_does_not_exist (id) VALUES (1);",
+    );
+
+    let module = Arc::new(DefaultDatabaseModule::from_app_root(root).unwrap());
+    let config = DatabaseConfig {
+        engine: DatabaseEngine::Sqlite,
+        url: "sqlite::memory:".to_string(),
+        max_connections: 1,
+        ..Default::default()
+    };
+    let pool = create_pool_from_config(config).await.unwrap();
+    let sqlite_pool = pool.as_sqlite().expect("sqlite pool").clone();
+    let orchestrator = LifecycleOrchestrator::new(pool, module);
+
+    assert!(orchestrator.init().await.is_err());
+    let table_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'atomic_baseline_probe'",
+    )
+    .fetch_one(&sqlite_pool)
+    .await
+    .unwrap();
+    assert_eq!(table_count, 0, "failed baseline must not leave partial DDL");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn concurrent_migrate_calls_are_serialized_by_the_database_lock() {
     let temp = TempDir::new().unwrap();

@@ -159,22 +159,30 @@ pub fn postgres_url_with_search_path(base_url: &str, service_prefix: &str) -> St
         return base_url.to_string();
     }
 
-    if postgres_url_has_search_path(base_url, schema.as_str()) {
+    let fallback_public = env_optional("SDKWORK_DATABASE_SCHEMA_FALLBACK_PUBLIC")
+        .is_none_or(|value| !matches!(value.to_ascii_lowercase().as_str(), "0" | "false" | "no"));
+    let search_path = if fallback_public {
+        format!("{schema},public")
+    } else {
+        schema
+    };
+
+    if postgres_url_has_search_path(base_url, search_path.as_str()) {
         return base_url.to_string();
     }
 
-    let option_value = format!("-c search_path={schema},public");
+    let option_value = format!("-c search_path={search_path}");
     append_postgres_url_query_param(base_url, "options", &option_value)
 }
 
-fn postgres_url_has_search_path(base_url: &str, schema: &str) -> bool {
+fn postgres_url_has_search_path(base_url: &str, search_path: &str) -> bool {
     let Some((_, query_and_fragment)) = base_url.split_once('?') else {
         return false;
     };
     let query = query_and_fragment
         .split_once('#')
         .map_or(query_and_fragment, |(query, _)| query);
-    let expected = format!("search_path={schema},public");
+    let expected = format!("search_path={search_path}");
 
     query.split('&').any(|parameter| {
         let Some((key, value)) = parameter.split_once('=') else {
@@ -361,6 +369,24 @@ mod tests {
             "SDKWORK_IAM",
         );
         assert!(url.contains("options=-c%20search_path%3Dsdkwork_ai_dev%2Cpublic"));
+    }
+
+    #[test]
+    #[serial]
+    fn postgres_url_with_search_path_can_disable_public_schema_fallback() {
+        let _guard = EnvGuard::set(&[
+            ("SDKWORK_IAM_DATABASE_SCHEMA", None),
+            ("SDKWORK_CLAW_DATABASE_SCHEMA", Some("sdkwork_ai_dev")),
+            ("SDKWORK_DATABASE_SCHEMA", None),
+            ("SDKWORK_DATABASE_SCHEMA_FALLBACK_PUBLIC", Some("false")),
+        ]);
+
+        let url = postgres_url_with_search_path(
+            "postgresql://sdkwork_ai_dev:sdkworkdev123@127.0.0.1:5432/sdkwork_ai_dev?sslmode=disable",
+            "SDKWORK_IAM",
+        );
+        assert!(url.contains("options=-c%20search_path%3Dsdkwork_ai_dev"));
+        assert!(!url.contains("%2Cpublic"));
     }
 
     #[test]

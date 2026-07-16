@@ -235,6 +235,24 @@ pub async fn execute_sql_script(pool: &DatabasePool, script: &str) -> Result<(),
     Ok(())
 }
 
+/// Execute a trusted lifecycle script as one transaction when the script does not
+/// already own an explicit transaction boundary.
+pub async fn execute_sql_script_atomically(
+    pool: &DatabasePool,
+    script: &str,
+) -> Result<(), HistoryError> {
+    if script_has_explicit_transaction(script) {
+        return execute_transactional_sql_script(pool, script).await;
+    }
+
+    let begin = match pool {
+        DatabasePool::Sqlite(_, _) => "BEGIN IMMEDIATE;",
+        DatabasePool::Postgres(_, _) => "BEGIN;",
+    };
+    let transactional_script = format!("{begin}\n{script}\nCOMMIT;");
+    execute_transactional_sql_script(pool, &transactional_script).await
+}
+
 async fn execute_transactional_sql_script(
     pool: &DatabasePool,
     script: &str,

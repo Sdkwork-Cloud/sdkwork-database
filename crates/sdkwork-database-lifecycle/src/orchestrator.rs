@@ -2,9 +2,10 @@ use std::time::Instant;
 
 use sdkwork_database_config::claw_database::resolve_unified_postgres_schema;
 use sdkwork_database_history::{
-    acquire_migration_lock, ensure_history_tables, execute_sql_script, fetch_installation_state,
-    file_checksum, is_seed_applied, list_applied_migration_versions, migration_checksum,
-    record_migration, record_seed, upsert_installation_state,
+    acquire_migration_lock, ensure_history_tables, execute_sql_script,
+    execute_sql_script_atomically, fetch_installation_state, file_checksum, is_seed_applied,
+    list_applied_migration_versions, migration_checksum, record_migration, record_seed,
+    upsert_installation_state,
 };
 use sdkwork_database_spi::{
     types::{
@@ -132,7 +133,7 @@ impl LifecycleOrchestrator {
                     script_path.display()
                 ))
             })?;
-            execute_sql_script(&self.pool, &sql).await?;
+            execute_sql_script_atomically(&self.pool, &sql).await?;
             applied_count += 1;
         }
 
