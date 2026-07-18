@@ -387,9 +387,7 @@ fn normalized_database_authority(url: &str) -> String {
         return url.to_string();
     };
     let (scheme, remainder) = url.split_at(scheme_end + 3);
-    let authority_end = remainder
-        .find(|character| matches!(character, '/' | '?' | '#'))
-        .unwrap_or(remainder.len());
+    let authority_end = remainder.find(['/', '?', '#']).unwrap_or(remainder.len());
     let authority = &remainder[..authority_end];
     let authority_without_credentials = authority
         .rsplit_once('@')

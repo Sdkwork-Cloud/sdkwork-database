@@ -58,8 +58,7 @@ fn register_result(code: c_int, function_name: &str) -> Result<(), sqlx::Error> 
     if code == ffi::SQLITE_OK {
         return Ok(());
     }
-    Err(sqlx::Error::Configuration(Box::new(io::Error::new(
-        io::ErrorKind::Other,
+    Err(sqlx::Error::Configuration(Box::new(io::Error::other(
         format!("failed to register SQLite function {function_name}: code {code}"),
     ))))
 }

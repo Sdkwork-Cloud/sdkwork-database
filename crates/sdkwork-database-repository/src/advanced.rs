@@ -170,8 +170,6 @@ fn validate_columns<E: Entity>(columns: &[&str]) -> Result<(), RepositoryError> 
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn validate_columns_accepts_known_columns() {
         // Test would need a concrete Entity implementation

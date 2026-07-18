@@ -71,9 +71,8 @@ async fn registry_migrate_all_applies_each_module() {
     write_module(root, "beta", "beta_probe");
 
     let alpha =
-        DefaultDatabaseModule::from_module_root(&root.join("database/modules/alpha")).unwrap();
-    let beta =
-        DefaultDatabaseModule::from_module_root(&root.join("database/modules/beta")).unwrap();
+        DefaultDatabaseModule::from_module_root(root.join("database/modules/alpha")).unwrap();
+    let beta = DefaultDatabaseModule::from_module_root(root.join("database/modules/beta")).unwrap();
     let registry = DatabaseModuleRegistry::builder()
         .register(alpha)
         .unwrap()
@@ -107,7 +106,7 @@ async fn registry_bootstrap_all_runs_init_and_seed() {
     write_module(root, "alpha", "alpha_probe");
 
     let alpha =
-        DefaultDatabaseModule::from_module_root(&root.join("database/modules/alpha")).unwrap();
+        DefaultDatabaseModule::from_module_root(root.join("database/modules/alpha")).unwrap();
     let registry = DatabaseModuleRegistry::builder()
         .register(alpha)
         .unwrap()

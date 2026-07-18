@@ -245,12 +245,86 @@ pub async fn execute_sql_script_atomically(
         return execute_transactional_sql_script(pool, script).await;
     }
 
-    let begin = match pool {
-        DatabasePool::Sqlite(_, _) => "BEGIN IMMEDIATE;",
-        DatabasePool::Postgres(_, _) => "BEGIN;",
-    };
-    let transactional_script = format!("{begin}\n{script}\nCOMMIT;");
+    if let DatabasePool::Sqlite(sqlite_pool, _) = pool {
+        return execute_sqlite_script_atomically(sqlite_pool, script).await;
+    }
+
+    let transactional_script = format!("BEGIN;\n{script}\nCOMMIT;");
     execute_transactional_sql_script(pool, &transactional_script).await
+}
+
+async fn execute_sqlite_script_atomically(
+    pool: &sqlx::SqlitePool,
+    script: &str,
+) -> Result<(), HistoryError> {
+    let mut connection = pool.acquire().await.map_err(|error| {
+        HistoryError::Sql(format!("sqlite atomic script connection failed: {error}"))
+    })?;
+    sqlx::raw_sql("BEGIN IMMEDIATE;")
+        .execute(&mut *connection)
+        .await
+        .map_err(|error| {
+            HistoryError::Sql(format!("sqlite atomic script begin failed: {error}"))
+        })?;
+
+    for statement in split_sql_statements(script) {
+        if statement.is_empty() {
+            continue;
+        }
+        if let Err(error) = execute_sqlite_statement(&mut connection, &statement).await {
+            let rollback = sqlx::raw_sql("ROLLBACK;").execute(&mut *connection).await;
+            if rollback.is_err() {
+                connection.close_on_drop();
+            }
+            return Err(error);
+        }
+    }
+
+    sqlx::raw_sql("COMMIT;")
+        .execute(&mut *connection)
+        .await
+        .map_err(|error| {
+            HistoryError::Sql(format!("sqlite atomic script commit failed: {error}"))
+        })?;
+    Ok(())
+}
+
+async fn execute_sqlite_statement(
+    connection: &mut sqlx::SqliteConnection,
+    sql: &str,
+) -> Result<(), HistoryError> {
+    if let Some(statement) = parse_sqlite_add_column_if_not_exists(sql) {
+        for column in statement.columns {
+            if sqlite_column_exists_on_connection(
+                connection,
+                &statement.table_name,
+                &column.column_name,
+            )
+            .await?
+            {
+                continue;
+            }
+            let add_column_sql = format!(
+                "ALTER TABLE {} ADD COLUMN {} {};",
+                quote_sqlite_identifier(&statement.table_name),
+                quote_sqlite_identifier(&column.column_name),
+                column.column_definition_tail
+            );
+            sqlx::raw_sql(&add_column_sql)
+                .execute(&mut *connection)
+                .await
+                .map_err(|error| {
+                    HistoryError::Sql(format!("sqlite add column if not exists failed: {error}"))
+                })?;
+        }
+        return Ok(());
+    }
+
+    sqlx::raw_sql(sql)
+        .execute(connection)
+        .await
+        .map_err(|error| HistoryError::Sql(format!("sqlite atomic statement failed: {error}")))?;
+    Ok(())
 }
 
 async fn execute_transactional_sql_script(
@@ -434,6 +508,25 @@ async fn sqlite_column_exists(
     let count = sqlx::query_scalar::<_, i64>(&query)
         .bind(column_name)
         .fetch_one(pool)
+        .await
+        .map_err(|error| {
+            HistoryError::Sql(format!("sqlite column existence check failed: {error}"))
+        })?;
+    Ok(count > 0)
+}
+
+async fn sqlite_column_exists_on_connection(
+    connection: &mut sqlx::SqliteConnection,
+    table_name: &str,
+    column_name: &str,
+) -> Result<bool, HistoryError> {
+    let query = format!(
+        "SELECT COUNT(*) FROM pragma_table_info({}) WHERE name = $1",
+        quote_sqlite_string_literal(table_name)
+    );
+    let count = sqlx::query_scalar::<_, i64>(&query)
+        .bind(column_name)
+        .fetch_one(connection)
         .await
         .map_err(|error| {
             HistoryError::Sql(format!("sqlite column existence check failed: {error}"))
@@ -1700,6 +1793,39 @@ SELECT 1;
         .await
         .expect("column probe");
         assert_eq!(present, 2);
+    }
+
+    #[tokio::test]
+    async fn sqlite_atomic_sql_script_supports_add_column_if_not_exists() {
+        let config = sdkwork_database_config::DatabaseConfig {
+            engine: DatabaseEngine::Sqlite,
+            url: "sqlite::memory:".to_string(),
+            max_connections: 1,
+            ..Default::default()
+        };
+        let pool = sdkwork_database_sqlx::create_pool_from_config(config)
+            .await
+            .expect("sqlite pool");
+
+        execute_sql_script_atomically(
+            &pool,
+            r#"
+            CREATE TABLE probe (id TEXT PRIMARY KEY);
+            ALTER TABLE probe ADD COLUMN IF NOT EXISTS display_name TEXT NOT NULL DEFAULT '';
+            ALTER TABLE probe ADD COLUMN IF NOT EXISTS display_name TEXT NOT NULL DEFAULT '';
+            "#,
+        )
+        .await
+        .expect("atomic conditional add column should be idempotent");
+
+        let sqlite = pool.as_sqlite().expect("sqlite pool");
+        let present = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM pragma_table_info('probe') WHERE name = 'display_name'",
+        )
+        .fetch_one(sqlite)
+        .await
+        .expect("column probe");
+        assert_eq!(present, 1);
     }
 
     #[test]

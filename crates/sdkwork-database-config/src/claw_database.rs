@@ -155,13 +155,13 @@ const DEFAULT_POSTGRES_SCHEMA: &str = "public";
 /// Append a PostgreSQL `options` query parameter so every pooled connection uses the unified schema.
 pub fn postgres_url_with_search_path(base_url: &str, service_prefix: &str) -> String {
     let schema = resolve_unified_postgres_schema(service_prefix);
-    if schema == DEFAULT_POSTGRES_SCHEMA {
-        return base_url.to_string();
-    }
-
     let fallback_public = env_optional("SDKWORK_DATABASE_SCHEMA_FALLBACK_PUBLIC")
-        .is_none_or(|value| !matches!(value.to_ascii_lowercase().as_str(), "0" | "false" | "no"));
-    let search_path = if fallback_public {
+        .map_or(true, |value| {
+            !matches!(value.to_ascii_lowercase().as_str(), "0" | "false" | "no")
+        });
+    let search_path = if schema == DEFAULT_POSTGRES_SCHEMA {
+        schema
+    } else if fallback_public {
         format!("{schema},public")
     } else {
         schema
@@ -463,7 +463,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn postgres_url_with_search_path_leaves_public_schema_urls_unchanged() {
+    fn postgres_url_with_search_path_pins_default_public_schema() {
         let _guard = EnvGuard::set(&[
             ("SDKWORK_IAM_DATABASE_SCHEMA", None),
             ("SDKWORK_CLAW_DATABASE_SCHEMA", None),
@@ -471,10 +471,12 @@ mod tests {
         ]);
 
         let base = "postgresql://sdkwork_ai_dev:sdkworkdev123@127.0.0.1:5432/sdkwork_ai_dev";
-        assert_eq!(
-            base,
-            postgres_url_with_search_path(base, "SDKWORK_IAM").as_str()
-        );
+        let once = postgres_url_with_search_path(base, "SDKWORK_IAM");
+        let twice = postgres_url_with_search_path(&once, "SDKWORK_IAM");
+
+        assert_eq!(once, twice);
+        assert!(twice.contains("options=-c%20search_path%3Dpublic"));
+        assert_eq!(twice.matches("options=").count(), 1);
     }
 
     #[test]
