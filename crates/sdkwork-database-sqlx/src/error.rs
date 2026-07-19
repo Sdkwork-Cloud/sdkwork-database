@@ -26,6 +26,38 @@ pub enum PoolError {
     /// Migration error.
     #[error("Migration error: {0}")]
     Migration(String),
+
+    /// A module requested a different database identity after the process pool was installed.
+    #[error(
+        "Process-shared database pool identity mismatch: installed [{installed}], requested [{requested}]"
+    )]
+    ProcessPoolIdentityMismatch {
+        /// Redacted identity of the installed process pool.
+        installed: String,
+        /// Redacted identity requested by the later consumer.
+        requested: String,
+    },
+
+    /// A module requested a pool driver that cannot reuse the installed process pool.
+    #[error(
+        "Process-shared database pool driver mismatch: installed driver [{installed}], requested driver [{requested}]"
+    )]
+    ProcessPoolDriverMismatch {
+        /// Driver owned by the process pool.
+        installed: &'static str,
+        /// Driver requested by the consumer.
+        requested: &'static str,
+    },
+
+    /// A compatibility driver was requested before the canonical process pool existed.
+    #[error("Process-shared database pool is not installed before compatibility driver request")]
+    ProcessPoolNotInstalled,
+
+    /// The temporary driver flag was enabled only after the canonical pool was created.
+    #[error(
+        "Temporary database driver capacity was not reserved before canonical process pool creation"
+    )]
+    TemporaryDriverCapacityNotReserved,
 }
 
 impl From<sqlx::Error> for PoolError {

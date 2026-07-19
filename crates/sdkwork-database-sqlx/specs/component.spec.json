@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "kind": "sdkwork.component.spec",
+  "component": {
+    "name": "sdkwork-database-sqlx",
+    "displayName": "SDKWork SQLx Database Pool",
+    "version": "0.1.0",
+    "type": "rust-crate",
+    "root": "sdkwork-database/crates/sdkwork-database-sqlx",
+    "domain": "database",
+    "capability": "process-shared-database-pool",
+    "languages": ["rust"],
+    "generated": false,
+    "manifests": ["Cargo.toml", "specs/component.spec.json"]
+  },
+  "canonicalSpecs": [
+    {"file": "CODE_STYLE_SPEC.md", "path": "../../../sdkwork-specs/CODE_STYLE_SPEC.md", "purpose": "Authored source style."},
+    {"file": "NAMING_SPEC.md", "path": "../../../sdkwork-specs/NAMING_SPEC.md", "purpose": "Canonical Rust names."},
+    {"file": "RUST_CODE_SPEC.md", "path": "../../../sdkwork-specs/RUST_CODE_SPEC.md", "purpose": "Rust module and verification boundaries."},
+    {"file": "DATABASE_SPEC.md", "path": "../../../sdkwork-specs/DATABASE_SPEC.md", "purpose": "Database identity and lifecycle semantics."},
+    {"file": "DATABASE_FRAMEWORK_SPEC.md", "path": "../../../sdkwork-specs/DATABASE_FRAMEWORK_SPEC.md", "purpose": "Database framework integration."},
+    {"file": "DATABASE_SPEC_PROCESS_SHARED_POOL.md", "path": "../../../sdkwork-specs/DATABASE_SPEC_PROCESS_SHARED_POOL.md", "purpose": "Process-local pool cardinality and reuse."},
+    {"file": "SECURITY_SPEC.md", "path": "../../../sdkwork-specs/SECURITY_SPEC.md", "purpose": "Credential redaction and fail-closed behavior."},
+    {"file": "TEST_SPEC.md", "path": "../../../sdkwork-specs/TEST_SPEC.md", "purpose": "Pool reuse verification."}
+  ],
+  "contracts": {
+    "layerRole": "backend-provider",
+    "publicExports": ["crate-root"],
+    "providedPorts": [
+      {"name": "databasePool", "export": "crate-root"},
+      {"name": "processSharedDatabasePool", "export": "crate-root"}
+    ],
+    "requiredPorts": [
+      {"name": "databaseConfig", "export": "crate-root", "provider": "sdkwork-database-config"}
+    ],
+    "runtimeEntrypoints": [
+      "enable_process_shared_database_pool",
+      "process_shared_database_pool",
+      "process_shared_temporary_driver_max_connections",
+      "create_pool_from_config",
+      "create_pool_from_env"
+    ],
+    "routeManifest": null,
+    "sdkClients": [],
+    "sdkDependencies": [],
+    "dependencyApiExports": [],
+    "dependencyApiSurfaces": [],
+    "events": [],
+    "configKeys": [
+      "SDKWORK_DATABASE_URL",
+      "SDKWORK_DATABASE_SCHEMA",
+      "SDKWORK_DATABASE_TEMPORARY_ANY_POOL_EXCEPTION",
+      "SDKWORK_DATABASE_TEMPORARY_DRIVER_POOL_COUNT",
+      "SDKWORK_<PROCESS>_DATABASE_MAX_CONNECTIONS"
+    ]
+  },
+  "verification": {
+    "commands": [
+      "cargo test -p sdkwork-database-sqlx",
+      "cargo clippy -p sdkwork-database-sqlx --tests -- -D warnings"
+    ]
+  }
+}

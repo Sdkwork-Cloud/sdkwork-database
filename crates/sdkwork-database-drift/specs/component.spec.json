@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "kind": "sdkwork.component.spec",
+  "component": {
+    "name": "sdkwork-database-drift",
+    "displayName": "SDKWork Database Drift",
+    "version": "0.1.0",
+    "type": "rust-crate",
+    "root": "sdkwork-database/crates/sdkwork-database-drift",
+    "domain": "database",
+    "capability": "schema-drift-detection",
+    "surface": "backend-service",
+    "languages": ["rust"],
+    "generated": false,
+    "status": "active",
+    "manifests": ["Cargo.toml", "specs/component.spec.json"]
+  },
+  "canonicalSpecs": [
+    {"file": "CODE_STYLE_SPEC.md", "path": "../../../sdkwork-specs/CODE_STYLE_SPEC.md", "purpose": "Authored module boundaries."},
+    {"file": "NAMING_SPEC.md", "path": "../../../sdkwork-specs/NAMING_SPEC.md", "purpose": "Rust component naming."},
+    {"file": "RUST_CODE_SPEC.md", "path": "../../../sdkwork-specs/RUST_CODE_SPEC.md", "purpose": "Rust crate structure and verification."},
+    {"file": "DATABASE_SPEC.md", "path": "../../../sdkwork-specs/DATABASE_SPEC.md", "purpose": "Portable database schema contracts."},
+    {"file": "DATABASE_FRAMEWORK_SPEC.md", "path": "../../../sdkwork-specs/DATABASE_FRAMEWORK_SPEC.md", "purpose": "Lifecycle drift detection ownership."},
+    {"file": "TEST_SPEC.md", "path": "../../../sdkwork-specs/TEST_SPEC.md", "purpose": "Cross-engine drift verification."}
+  ],
+  "contracts": {
+    "layerRole": "tooling",
+    "publicExports": ["crate-root"],
+    "providedPorts": [
+      {"name": "schemaDriftDetection", "export": "crate-root"}
+    ],
+    "requiredPorts": [
+      {"name": "databaseContract", "export": "crate-root", "provider": "sdkwork-database-contract"},
+      {"name": "databasePool", "export": "crate-root", "provider": "sdkwork-database-sqlx"}
+    ],
+    "runtimeEntrypoints": [],
+    "routeManifest": null,
+    "sdkClients": [],
+    "sdkDependencies": [],
+    "permissionComposition": {},
+    "dependencyApiExports": [],
+    "dependencyApiSurfaces": [],
+    "events": [],
+    "configKeys": []
+  },
+  "verification": {
+    "commands": [
+      "cargo test -p sdkwork-database-drift",
+      "cargo clippy -p sdkwork-database-drift --all-targets -- -D warnings"
+    ]
+  }
+}

@@ -72,12 +72,209 @@ fn normalize_predicate(predicate: Option<&str>) -> Option<String> {
         return None;
     }
 
-    let mut tokens = tokenize_sql(predicate);
-    while outer_parentheses_wrap_all(&tokens) {
-        tokens.remove(0);
-        tokens.pop();
+    let tokens = tokenize_sql(predicate);
+    Some(canonicalize_predicate_tokens(&tokens).join(" "))
+}
+
+fn canonicalize_predicate_tokens(tokens: &[String]) -> Vec<String> {
+    let tokens = strip_outer_parentheses(tokens);
+
+    if let Some(parts) = split_top_level(tokens, "or") {
+        return join_boolean_parts("or", &parts);
     }
-    Some(tokens.join(" "))
+    if let Some(parts) = split_top_level(tokens, "and") {
+        return join_boolean_parts("and", &parts);
+    }
+    if tokens.first().map(String::as_str) == Some("not") && tokens.len() > 1 {
+        return canonical_not(&tokens[1..]);
+    }
+
+    canonicalize_atomic_predicate(tokens)
+}
+
+fn join_boolean_parts(operator: &str, parts: &[&[String]]) -> Vec<String> {
+    let mut canonical = vec!["(".to_string()];
+    for (index, part) in parts.iter().enumerate() {
+        if index > 0 {
+            canonical.push(operator.to_string());
+        }
+        canonical.extend(canonicalize_predicate_tokens(part));
+    }
+    canonical.push(")".to_string());
+    canonical
+}
+
+fn canonicalize_atomic_predicate(tokens: &[String]) -> Vec<String> {
+    if let Some(position) = find_top_level_token(tokens, "in") {
+        let is_not_in = position > 0 && tokens[position - 1] == "not";
+        if !is_not_in {
+            if let Some(values) = parse_parenthesized_list(&tokens[position + 1..]) {
+                return canonical_membership(&tokens[..position], &values);
+            }
+        }
+    }
+
+    if let Some(position) = find_top_level_token(tokens, "=") {
+        let left = &tokens[..position];
+        let right = &tokens[position + 1..];
+        if let Some(values) = parse_any_array(right) {
+            return canonical_membership(left, &values);
+        }
+        if let Some(values) = parse_any_array(left) {
+            return canonical_membership(right, &values);
+        }
+        if let Some(value) = boolean_literal(right) {
+            return canonical_boolean_comparison(left, value);
+        }
+        if let Some(value) = boolean_literal(left) {
+            return canonical_boolean_comparison(right, value);
+        }
+    }
+
+    if let Some(position) = find_top_level_token(tokens, "is") {
+        let operand = &tokens[..position];
+        let test = strip_outer_parentheses(&tokens[position + 1..]);
+        match test {
+            [value] if value == "true" => return canonicalize_predicate_tokens(operand),
+            [value] if value == "false" => return canonical_not(operand),
+            [not, value] if not == "not" && value == "false" => {
+                return canonicalize_predicate_tokens(operand);
+            }
+            [not, value] if not == "not" && value == "true" => return canonical_not(operand),
+            _ => {}
+        }
+    }
+
+    canonicalize_scalar_tokens(tokens)
+}
+
+fn canonical_boolean_comparison(operand: &[String], value: bool) -> Vec<String> {
+    if value {
+        canonicalize_predicate_tokens(operand)
+    } else {
+        canonical_not(operand)
+    }
+}
+
+fn canonical_not(tokens: &[String]) -> Vec<String> {
+    let mut canonical = vec!["not".to_string(), "(".to_string()];
+    canonical.extend(canonicalize_predicate_tokens(tokens));
+    canonical.push(")".to_string());
+    canonical
+}
+
+fn canonical_membership(left: &[String], values: &[&[String]]) -> Vec<String> {
+    let mut canonical = canonicalize_scalar_tokens(left);
+    canonical.extend(["in".to_string(), "(".to_string()]);
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            canonical.push(",".to_string());
+        }
+        canonical.extend(canonicalize_scalar_tokens(value));
+    }
+    canonical.push(")".to_string());
+    canonical
+}
+
+fn canonicalize_scalar_tokens(tokens: &[String]) -> Vec<String> {
+    strip_outer_parentheses(tokens).to_vec()
+}
+
+fn boolean_literal(tokens: &[String]) -> Option<bool> {
+    match strip_outer_parentheses(tokens) {
+        [value] if value == "true" => Some(true),
+        [value] if value == "false" => Some(false),
+        _ => None,
+    }
+}
+
+fn parse_any_array(tokens: &[String]) -> Option<Vec<&[String]>> {
+    let tokens = strip_outer_parentheses(tokens);
+    if tokens.first().map(String::as_str) != Some("any") || tokens.len() < 4 {
+        return None;
+    }
+    let arguments = &tokens[1..];
+    if !outer_parentheses_wrap_all(arguments) {
+        return None;
+    }
+    let array = strip_outer_parentheses(&arguments[1..arguments.len() - 1]);
+    if array.first().map(String::as_str) != Some("array") {
+        return None;
+    }
+    parse_bracketed_list(&array[1..])
+}
+
+fn parse_parenthesized_list(tokens: &[String]) -> Option<Vec<&[String]>> {
+    if !outer_parentheses_wrap_all(tokens) {
+        return None;
+    }
+    split_top_level_list(&tokens[1..tokens.len() - 1])
+}
+
+fn parse_bracketed_list(tokens: &[String]) -> Option<Vec<&[String]>> {
+    if !outer_brackets_wrap_all(tokens) {
+        return None;
+    }
+    split_top_level_list(&tokens[1..tokens.len() - 1])
+}
+
+fn split_top_level_list(tokens: &[String]) -> Option<Vec<&[String]>> {
+    if tokens.is_empty() {
+        return None;
+    }
+    let parts = split_at_top_level(tokens, ",");
+    parts.iter().all(|part| !part.is_empty()).then_some(parts)
+}
+
+fn split_top_level<'a>(tokens: &'a [String], separator: &str) -> Option<Vec<&'a [String]>> {
+    let parts = split_at_top_level(tokens, separator);
+    (parts.len() > 1 && parts.iter().all(|part| !part.is_empty())).then_some(parts)
+}
+
+fn split_at_top_level<'a>(tokens: &'a [String], separator: &str) -> Vec<&'a [String]> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut parentheses = 0_i32;
+    let mut brackets = 0_i32;
+
+    for (position, token) in tokens.iter().enumerate() {
+        match token.as_str() {
+            "(" => parentheses += 1,
+            ")" => parentheses -= 1,
+            "[" => brackets += 1,
+            "]" => brackets -= 1,
+            _ if token == separator && parentheses == 0 && brackets == 0 => {
+                parts.push(&tokens[start..position]);
+                start = position + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&tokens[start..]);
+    parts
+}
+
+fn find_top_level_token(tokens: &[String], target: &str) -> Option<usize> {
+    let mut parentheses = 0_i32;
+    let mut brackets = 0_i32;
+    for (position, token) in tokens.iter().enumerate() {
+        match token.as_str() {
+            "(" => parentheses += 1,
+            ")" => parentheses -= 1,
+            "[" => brackets += 1,
+            "]" => brackets -= 1,
+            _ if token == target && parentheses == 0 && brackets == 0 => return Some(position),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn strip_outer_parentheses(mut tokens: &[String]) -> &[String] {
+    while outer_parentheses_wrap_all(tokens) {
+        tokens = &tokens[1..tokens.len() - 1];
+    }
+    tokens
 }
 
 fn tokenize_sql(sql: &str) -> Vec<String> {
@@ -92,7 +289,8 @@ fn tokenize_sql(sql: &str) -> Vec<String> {
             continue;
         }
 
-        if matches!(current, '\'' | '"' | '`' | '[') {
+        let array_bracket = current == '[' && tokens.last().map(String::as_str) == Some("array");
+        if matches!(current, '\'' | '"' | '`') || (current == '[' && !array_bracket) {
             let terminator = if current == '[' { ']' } else { current };
             let start = index;
             index += 1;
@@ -162,6 +360,33 @@ fn outer_parentheses_wrap_all(tokens: &[String]) -> bool {
         match token.as_str() {
             "(" => depth += 1,
             ")" => {
+                depth -= 1;
+                if depth == 0 && position + 1 != tokens.len() {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+        if depth < 0 {
+            return false;
+        }
+    }
+    depth == 0
+}
+
+fn outer_brackets_wrap_all(tokens: &[String]) -> bool {
+    if tokens.len() < 2 || tokens.first().map(String::as_str) != Some("[") {
+        return false;
+    }
+    if tokens.last().map(String::as_str) != Some("]") {
+        return false;
+    }
+
+    let mut depth = 0_i32;
+    for (position, token) in tokens.iter().enumerate() {
+        match token.as_str() {
+            "[" => depth += 1,
+            "]" => {
                 depth -= 1;
                 if depth == 0 && position + 1 != tokens.len() {
                     return false;
@@ -428,6 +653,54 @@ mod tests {
         assert!(!predicates_match(
             Some("status = 'ACTIVE'"),
             Some("status = 'active'")
+        ));
+    }
+
+    #[test]
+    fn predicate_normalization_matches_postgres_equivalent_forms() {
+        assert!(predicates_match(
+            Some("auto_renew = true AND status = 1"),
+            Some("((auto_renew = true) AND (status = 1))")
+        ));
+        assert!(predicates_match(
+            Some("status IN (0, 1, 2)"),
+            Some("status = ANY (ARRAY[0, 1, 2])")
+        ));
+        assert!(predicates_match(
+            Some("auto_renew = TRUE"),
+            Some("auto_renew")
+        ));
+        assert!(predicates_match(
+            Some("auto_renew = false"),
+            Some("NOT auto_renew")
+        ));
+        assert!(predicates_match(
+            Some("auto_renew IS NOT FALSE"),
+            Some("auto_renew = true")
+        ));
+    }
+
+    #[test]
+    fn predicate_normalization_rejects_semantic_differences() {
+        assert!(!predicates_match(
+            Some("status IN (0, 1, 2)"),
+            Some("status = ANY (ARRAY[0, 1, 3])")
+        ));
+        assert!(!predicates_match(
+            Some("auto_renew = true"),
+            Some("auto_renew = false")
+        ));
+        assert!(!predicates_match(
+            Some("status = 1 AND auto_renew = true"),
+            Some("status = 1 OR auto_renew = true")
+        ));
+        assert!(!predicates_match(
+            Some("(status = 1 OR status = 2) AND auto_renew = true"),
+            Some("status = 1 OR (status = 2 AND auto_renew = true)")
+        ));
+        assert!(!predicates_match(
+            Some("state IN ('ACTIVE')"),
+            Some("state = ANY (ARRAY['active'])")
         ));
     }
 }

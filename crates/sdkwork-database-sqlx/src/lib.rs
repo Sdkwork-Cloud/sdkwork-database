@@ -42,6 +42,7 @@ pub mod builder;
 pub mod error;
 pub mod pool;
 pub mod postgres;
+mod process_shared;
 pub mod sqlite;
 pub mod sqlite_decimal;
 
@@ -52,4 +53,8 @@ pub use pool::{
     create_any_pool_from_config, create_any_pool_from_env, create_pool_from_config,
     create_pool_from_env, create_pool_from_toml, DatabasePool, PoolContext, PoolHealth,
     PoolHealthStatus,
+};
+pub use process_shared::{
+    enable_process_shared_database_pool, process_shared_database_pool,
+    process_shared_database_pool_enabled, process_shared_temporary_driver_max_connections,
 };

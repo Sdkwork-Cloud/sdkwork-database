@@ -46,10 +46,12 @@ pub enum DatabasePool {
 
 impl fmt::Debug for DatabasePool {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Sqlite(_, ctx) => f.debug_tuple("Sqlite").field(&ctx.config.url).finish(),
-            Self::Postgres(_, ctx) => f.debug_tuple("Postgres").field(&ctx.config.url).finish(),
-        }
+        f.debug_struct("DatabasePool")
+            .field(
+                "identity",
+                &crate::process_shared::redacted_identity(self.config()),
+            )
+            .finish_non_exhaustive()
     }
 }
 
@@ -311,6 +313,9 @@ pub async fn create_pool_from_config(config: DatabaseConfig) -> Result<DatabaseP
 
 /// Create a sqlx AnyPool from a configuration.
 pub async fn create_any_pool_from_config(config: DatabaseConfig) -> Result<AnyPool, PoolError> {
+    if crate::process_shared::process_shared_database_pool_enabled() {
+        return crate::process_shared::create_or_reuse_temporary_any_pool(config).await;
+    }
     let config = normalize_config_engine(config)?;
     create_any_pool(&config).await
 }

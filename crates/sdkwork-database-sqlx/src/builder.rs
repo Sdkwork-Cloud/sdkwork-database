@@ -105,6 +105,10 @@ impl PoolBuilder {
 
     /// Build the connection pool.
     pub async fn build(self) -> Result<DatabasePool, PoolError> {
+        crate::process_shared::create_or_reuse_process_pool(self.config).await
+    }
+
+    pub(crate) async fn build_unshared(self) -> Result<DatabasePool, PoolError> {
         // Validate configuration
         if self.config.url.is_empty() {
             return Err(PoolError::InvalidUrl(
