@@ -42,8 +42,7 @@ CREATE TABLE IF NOT EXISTS ops_seed_history (
 );
 
 CREATE TABLE IF NOT EXISTS ops_database_installation_state (
-    id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-    module_id TEXT NOT NULL,
+    module_id TEXT PRIMARY KEY,
     schema_version TEXT,
     contract_version TEXT,
     catalog_version TEXT,
@@ -81,8 +80,7 @@ CREATE TABLE IF NOT EXISTS ops_seed_history (
 );
 
 CREATE TABLE IF NOT EXISTS ops_database_installation_state (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    module_id TEXT NOT NULL,
+    module_id TEXT PRIMARY KEY,
     schema_version TEXT,
     contract_version TEXT,
     catalog_version TEXT,
@@ -155,8 +153,7 @@ CREATE TABLE IF NOT EXISTS {}seed_history (
 );
 
 CREATE TABLE IF NOT EXISTS {}database_installation_state (
-    id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-    module_id TEXT NOT NULL,
+    module_id TEXT PRIMARY KEY,
     schema_version TEXT,
     contract_version TEXT,
     catalog_version TEXT,
@@ -196,8 +193,7 @@ CREATE TABLE IF NOT EXISTS {}seed_history (
 );
 
 CREATE TABLE IF NOT EXISTS {}database_installation_state (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    module_id TEXT NOT NULL,
+    module_id TEXT PRIMARY KEY,
     schema_version TEXT,
     contract_version TEXT,
     catalog_version TEXT,
@@ -211,7 +207,63 @@ CREATE TABLE IF NOT EXISTS {}database_installation_state (
         ),
     };
     execute_sql_script(pool, &sql).await?;
+    migrate_legacy_installation_state_table(pool, prefix).await?;
     Ok(())
+}
+
+async fn migrate_legacy_installation_state_table(
+    pool: &DatabasePool,
+    prefix: &str,
+) -> Result<(), HistoryError> {
+    let table_name = format!("{prefix}database_installation_state");
+    let has_legacy_id = match pool {
+        DatabasePool::Sqlite(sqlite_pool, _) => {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM pragma_table_info($1) WHERE name = 'id'",
+            )
+            .bind(&table_name)
+            .fetch_one(sqlite_pool)
+            .await
+            .map_err(|error| HistoryError::State(error.to_string()))?
+                > 0
+        }
+        DatabasePool::Postgres(postgres_pool, _) => {
+            sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = $1 AND column_name = 'id')",
+            )
+            .bind(&table_name)
+            .fetch_one(postgres_pool)
+            .await
+            .map_err(|error| HistoryError::State(error.to_string()))?
+        }
+    };
+
+    if !has_legacy_id {
+        return Ok(());
+    }
+
+    let legacy_table_name = format!("{table_name}_legacy_singleton");
+    let migration = format!(
+        r#"
+ALTER TABLE {table_name} RENAME TO {legacy_table_name};
+CREATE TABLE {table_name} (
+    module_id TEXT PRIMARY KEY,
+    schema_version TEXT,
+    contract_version TEXT,
+    catalog_version TEXT,
+    environment TEXT,
+    seed_locale TEXT,
+    seed_profile TEXT,
+    status TEXT NOT NULL
+);
+INSERT INTO {table_name}
+    (module_id, schema_version, contract_version, catalog_version, environment, seed_locale, seed_profile, status)
+SELECT module_id, schema_version, contract_version, catalog_version, environment, seed_locale, seed_profile, status
+FROM {legacy_table_name};
+DROP TABLE {legacy_table_name};
+"#,
+    );
+    execute_sql_script_atomically(pool, &migration).await
 }
 
 /// Execute a multi-statement SQL script by splitting on `;` boundaries.
@@ -991,10 +1043,9 @@ pub async fn upsert_installation_state(
     status: &str,
 ) -> Result<(), HistoryError> {
     let query = "INSERT INTO ops_database_installation_state \
-                  (id, module_id, contract_version, seed_locale, seed_profile, status) \
-                  VALUES (1, $1, $2, $3, $4, $5) \
-                  ON CONFLICT(id) DO UPDATE SET \
-                      module_id = excluded.module_id, \
+                  (module_id, contract_version, seed_locale, seed_profile, status) \
+                  VALUES ($1, $2, $3, $4, $5) \
+                  ON CONFLICT(module_id) DO UPDATE SET \
                       contract_version = excluded.contract_version, \
                       seed_locale = excluded.seed_locale, \
                       seed_profile = excluded.seed_profile, \
@@ -1039,13 +1090,15 @@ pub struct InstallationState {
 /// Fetch the current installation state row.
 pub async fn fetch_installation_state(
     pool: &DatabasePool,
+    module_id: &str,
 ) -> Result<Option<InstallationState>, HistoryError> {
     let query = "SELECT module_id, contract_version, seed_locale, seed_profile, status \
                   FROM ops_database_installation_state \
-                  WHERE id = 1 LIMIT 1";
+                  WHERE module_id = $1 LIMIT 1";
     match pool {
         DatabasePool::Sqlite(sqlite_pool, _) => {
             let row = sqlx::query(query)
+                .bind(module_id)
                 .fetch_optional(sqlite_pool)
                 .await
                 .map_err(|e| HistoryError::State(e.to_string()))?;
@@ -1059,6 +1112,7 @@ pub async fn fetch_installation_state(
         }
         DatabasePool::Postgres(pg_pool, _) => {
             let row = sqlx::query(query)
+                .bind(module_id)
                 .fetch_optional(pg_pool)
                 .await
                 .map_err(|e| HistoryError::State(e.to_string()))?;
@@ -1826,6 +1880,108 @@ SELECT 1;
         .await
         .expect("column probe");
         assert_eq!(present, 1);
+    }
+
+    #[tokio::test]
+    async fn installation_state_tracks_each_module_independently() {
+        let config = sdkwork_database_config::DatabaseConfig {
+            engine: DatabaseEngine::Sqlite,
+            url: "sqlite::memory:".to_string(),
+            max_connections: 1,
+            ..Default::default()
+        };
+        let pool = sdkwork_database_sqlx::create_pool_from_config(config)
+            .await
+            .expect("sqlite pool");
+        ensure_history_tables(&pool)
+            .await
+            .expect("history tables should be created");
+
+        upsert_installation_state(&pool, "iam", "1.0.0", "", "", "schema_current")
+            .await
+            .expect("record IAM state");
+        upsert_installation_state(&pool, "audio", "1.0.0", "", "", "bootstrapped")
+            .await
+            .expect("record Audio state");
+
+        let iam = fetch_installation_state(&pool, "iam")
+            .await
+            .expect("fetch IAM state")
+            .expect("IAM state should exist");
+        let audio = fetch_installation_state(&pool, "audio")
+            .await
+            .expect("fetch Audio state")
+            .expect("Audio state should exist");
+        assert_eq!(iam.status, "schema_current");
+        assert_eq!(audio.status, "bootstrapped");
+
+        let row_count =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM ops_database_installation_state")
+                .fetch_one(pool.as_sqlite().expect("sqlite pool"))
+                .await
+                .expect("count installation states");
+        assert_eq!(row_count, 2);
+    }
+
+    #[tokio::test]
+    async fn ensure_history_tables_migrates_legacy_singleton_installation_state() {
+        let config = sdkwork_database_config::DatabaseConfig {
+            engine: DatabaseEngine::Sqlite,
+            url: "sqlite::memory:".to_string(),
+            max_connections: 1,
+            ..Default::default()
+        };
+        let pool = sdkwork_database_sqlx::create_pool_from_config(config)
+            .await
+            .expect("sqlite pool");
+        execute_sql_script(
+            &pool,
+            r#"
+CREATE TABLE ops_database_installation_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    module_id TEXT NOT NULL,
+    schema_version TEXT,
+    contract_version TEXT,
+    catalog_version TEXT,
+    environment TEXT,
+    seed_locale TEXT,
+    seed_profile TEXT,
+    status TEXT NOT NULL
+);
+INSERT INTO ops_database_installation_state
+    (id, module_id, contract_version, status)
+VALUES (1, 'legacy', '0.9.0', 'bootstrapped');
+"#,
+        )
+        .await
+        .expect("create legacy singleton state");
+
+        ensure_history_tables(&pool)
+            .await
+            .expect("legacy history table should migrate");
+        upsert_installation_state(&pool, "audio", "1.0.0", "", "", "schema_current")
+            .await
+            .expect("record Audio state after migration");
+
+        let legacy = fetch_installation_state(&pool, "legacy")
+            .await
+            .expect("fetch migrated state")
+            .expect("legacy state should be preserved");
+        assert_eq!(legacy.contract_version.as_deref(), Some("0.9.0"));
+        let sqlite = pool.as_sqlite().expect("sqlite pool");
+        let legacy_id_columns = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM pragma_table_info('ops_database_installation_state') WHERE name = 'id'",
+        )
+        .fetch_one(sqlite)
+        .await
+        .expect("inspect migrated state table");
+        let row_count =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM ops_database_installation_state")
+                .fetch_one(sqlite)
+                .await
+                .expect("count migrated installation states");
+        assert_eq!(legacy_id_columns, 0);
+        assert_eq!(row_count, 2);
     }
 
     #[test]

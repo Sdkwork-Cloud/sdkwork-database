@@ -33,7 +33,7 @@ impl DatabaseOpsService {
 
     pub async fn status(&self) -> Result<DatabaseStatusReport, OpsError> {
         let descriptor = self.module.descriptor();
-        let installation = fetch_installation_state(&self.pool).await?;
+        let installation = fetch_installation_state(&self.pool, &descriptor.module_id).await?;
         let orchestrator = LifecycleOrchestrator::new(self.pool.clone(), self.module.clone());
         let pending = orchestrator.plan_migrations().await?;
         let drift = DriftEngine::new(self.pool.clone(), self.module.clone())

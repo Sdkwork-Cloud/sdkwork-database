@@ -32,7 +32,19 @@ impl DefaultDatabaseModule {
     }
 
     pub fn from_app_root(app_root: impl AsRef<Path>) -> Result<Self, SpiError> {
-        Self::from_module_root(app_root.as_ref().join("database"))
+        let app_root = app_root.as_ref();
+        let source_module_root = app_root.join("database");
+        if source_module_root.join("database.manifest.json").is_file() {
+            return Self::from_module_root(source_module_root);
+        }
+
+        if let Some(workspace_name) = app_root.file_name() {
+            if let Some(module_root) = resolve_packaged_module_root(workspace_name) {
+                return Self::from_module_root(module_root);
+            }
+        }
+
+        Self::from_module_root(source_module_root)
     }
 
     pub fn from_manifest(
@@ -58,6 +70,42 @@ impl DefaultDatabaseModule {
     pub fn module_root(&self) -> &Path {
         &self.module_root
     }
+}
+
+fn resolve_packaged_module_root(workspace_name: &std::ffi::OsStr) -> Option<PathBuf> {
+    let mut module_roots = Vec::new();
+    if let Some(configured_root) = std::env::var_os("SDKWORK_DATABASE_MODULES_ROOT") {
+        module_roots.push(PathBuf::from(configured_root));
+    }
+    if let Ok(executable) = std::env::current_exe() {
+        if let Some(binary_dir) = executable.parent() {
+            module_roots.push(binary_dir.join("database-modules"));
+            if let Some(install_root) = binary_dir.parent() {
+                module_roots.push(install_root.join("database-modules"));
+            }
+        }
+    }
+    if let Ok(current_dir) = std::env::current_dir() {
+        module_roots.push(current_dir.join("database-modules"));
+        if let Some(parent) = current_dir.parent() {
+            module_roots.push(parent.join("database-modules"));
+        }
+    }
+
+    resolve_packaged_module_root_from_roots(workspace_name, &module_roots)
+}
+
+fn resolve_packaged_module_root_from_roots(
+    workspace_name: &std::ffi::OsStr,
+    module_roots: &[PathBuf],
+) -> Option<PathBuf> {
+    module_roots.iter().find_map(|root| {
+        let candidate = root.join(workspace_name).join("database");
+        candidate
+            .join("database.manifest.json")
+            .is_file()
+            .then_some(candidate)
+    })
 }
 
 impl DatabaseModuleDescriptorProvider for DefaultDatabaseModule {
@@ -218,3 +266,27 @@ impl DriftPolicyProvider for DefaultDatabaseModule {
 
 #[async_trait]
 impl DatabaseModule for DefaultDatabaseModule {}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsStr;
+
+    use super::resolve_packaged_module_root_from_roots;
+
+    #[test]
+    fn packaged_module_assets_follow_install_root_convention() {
+        let install_root = tempfile::tempdir().expect("temporary install root");
+        let modules_root = install_root.path().join("database-modules");
+        let database_root = modules_root.join("sdkwork-audio").join("database");
+        std::fs::create_dir_all(&database_root).expect("create packaged database root");
+        std::fs::write(database_root.join("database.manifest.json"), "{}")
+            .expect("write packaged database manifest");
+
+        let resolved = resolve_packaged_module_root_from_roots(
+            OsStr::new("sdkwork-audio"),
+            std::slice::from_ref(&modules_root),
+        );
+
+        assert_eq!(resolved.as_deref(), Some(database_root.as_path()));
+    }
+}

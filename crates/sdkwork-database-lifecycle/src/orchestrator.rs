@@ -98,10 +98,10 @@ impl LifecycleOrchestrator {
         if !applied.is_empty() {
             return Ok(0);
         }
-        if let Some(installation) = fetch_installation_state(&self.pool).await? {
-            if installation.module_id == descriptor.module_id
-                && installation.status == LifecycleState::Bootstrapped.status_label()
-            {
+        if let Some(installation) =
+            fetch_installation_state(&self.pool, &descriptor.module_id).await?
+        {
+            if installation.status == LifecycleState::Bootstrapped.status_label() {
                 return Ok(0);
             }
         }
@@ -472,20 +472,90 @@ impl LifecycleOrchestrator {
     ///
     /// Priority:
     /// 1. Explicit `baselineAnchorTable` in manifest
-    /// 2. `{first_prefix}tenant` if table prefixes are defined
-    /// 3. Fallback to `{module_id}_tenant` for backward compatibility
+    /// 2. First owned table in `contract/table-registry.json`
+    /// 3. `{first_prefix}tenant` if table prefixes are defined
+    /// 4. Fallback to `{module_id}_tenant` for backward compatibility
     fn resolve_anchor_table_name(&self, manifest: &DatabaseManifest) -> String {
-        // 1. Explicit configuration takes precedence
         if let Some(explicit) = &manifest.baseline_anchor_table {
             return explicit.clone();
         }
 
-        // 2. Use first table prefix if defined
+        if let Some(registered) = first_registered_table(self.module.module_root()) {
+            return registered;
+        }
+
         if let Some(first_prefix) = manifest.table_prefixes.first() {
             return format!("{}tenant", first_prefix);
         }
 
-        // 3. Fallback to module_id based name
         format!("{}_tenant", manifest.module_id)
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct TableRegistryFile {
+    tables: Vec<TableRegistryEntry>,
+}
+
+#[derive(serde::Deserialize)]
+struct TableRegistryEntry {
+    #[serde(alias = "name")]
+    table_name: String,
+}
+
+fn first_registered_table(module_root: &std::path::Path) -> Option<String> {
+    let registry_path = module_root.join("contract/table-registry.json");
+    let content = std::fs::read_to_string(registry_path).ok()?;
+    serde_json::from_str::<TableRegistryFile>(&content)
+        .ok()?
+        .tables
+        .into_iter()
+        .map(|entry| entry.table_name.trim().to_owned())
+        .find(|table_name| !table_name.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::first_registered_table;
+
+    #[test]
+    fn baseline_anchor_uses_first_structured_table_registry_entry() {
+        let temp = tempfile::tempdir().expect("create temp database module");
+        let contract = temp.path().join("contract");
+        std::fs::create_dir_all(&contract).expect("create contract directory");
+        std::fs::write(
+            contract.join("table-registry.json"),
+            r#"{
+                "schemaVersion": 1,
+                "kind": "sdkwork.database.table-registry",
+                "tables": [
+                    {"table_name": "iot_product"},
+                    {"table_name": "iot_device"}
+                ]
+            }"#,
+        )
+        .expect("write table registry");
+
+        assert_eq!(
+            first_registered_table(temp.path()).as_deref(),
+            Some("iot_product")
+        );
+    }
+
+    #[test]
+    fn baseline_anchor_accepts_schema_style_name_alias() {
+        let temp = tempfile::tempdir().expect("create temp database module");
+        let contract = temp.path().join("contract");
+        std::fs::create_dir_all(&contract).expect("create contract directory");
+        std::fs::write(
+            contract.join("table-registry.json"),
+            r#"{"tables": [{"name": "mk_preference_entry"}]}"#,
+        )
+        .expect("write table registry");
+
+        assert_eq!(
+            first_registered_table(temp.path()).as_deref(),
+            Some("mk_preference_entry")
+        );
     }
 }
