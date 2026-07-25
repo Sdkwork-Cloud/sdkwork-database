@@ -24,6 +24,7 @@ tokio.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+url.workspace = true
 sdkwork-database-config = { path = "../sdkwork-database-config" }
 sdkwork-database-lifecycle = { path = "../sdkwork-database-lifecycle" }
 sdkwork-database-sqlx = { path = "../sdkwork-database-sqlx" }

@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "kind": "sdkwork.component.spec",
+  "component": {
+    "name": "sdkwork-database-lifecycle",
+    "displayName": "SDKWork Database Lifecycle Orchestrator",
+    "version": "0.1.0",
+    "type": "rust-crate",
+    "root": "sdkwork-database/crates/sdkwork-database-lifecycle",
+    "domain": "database",
+    "capability": "database-lifecycle-orchestration",
+    "languages": ["rust"],
+    "generated": false,
+    "status": "active",
+    "manifests": ["Cargo.toml", "specs/component.spec.json"]
+  },
+  "canonicalSpecs": [
+    {"file": "CODE_STYLE_SPEC.md", "path": "../../../sdkwork-specs/CODE_STYLE_SPEC.md", "purpose": "Focused authored modules and typed errors."},
+    {"file": "NAMING_SPEC.md", "path": "../../../sdkwork-specs/NAMING_SPEC.md", "purpose": "Canonical lifecycle and database naming."},
+    {"file": "RUST_CODE_SPEC.md", "path": "../../../sdkwork-specs/RUST_CODE_SPEC.md", "purpose": "Rust orchestration and verification boundaries."},
+    {"file": "DATABASE_SPEC.md", "path": "../../../sdkwork-specs/DATABASE_SPEC.md", "purpose": "Transaction, consistency, and schema authority rules."},
+    {"file": "DATABASE_FRAMEWORK_SPEC.md", "path": "../../../sdkwork-specs/DATABASE_FRAMEWORK_SPEC.md", "purpose": "Lifecycle state machine and startup sequence."},
+    {"file": "DATABASE_SPEC_PROCESS_SHARED_POOL.md", "path": "../../../sdkwork-specs/DATABASE_SPEC_PROCESS_SHARED_POOL.md", "purpose": "Injected pool ownership and canonical schema identity."},
+    {"file": "TEST_SPEC.md", "path": "../../../sdkwork-specs/TEST_SPEC.md", "purpose": "SQLite and live PostgreSQL lifecycle verification."}
+  ],
+  "contracts": {
+    "layerRole": "backend-service",
+    "publicExports": ["crate-root"],
+    "providedPorts": [
+      {"name": "databaseLifecycleOrchestration", "export": "crate-root"},
+      {"name": "databaseRegistryLifecycleOrchestration", "export": "crate-root"}
+    ],
+    "requiredPorts": [
+      {"name": "databaseModuleSpi", "export": "crate-root", "provider": "sdkwork-database-spi"},
+      {"name": "databaseLifecycleHistory", "export": "crate-root", "provider": "sdkwork-database-history"},
+      {"name": "databasePool", "export": "crate-root", "provider": "sdkwork-database-sqlx"}
+    ],
+    "runtimeEntrypoints": [],
+    "routeManifest": null,
+    "sdkClients": [],
+    "sdkDependencies": [],
+    "dependencyApiExports": [],
+    "dependencyApiSurfaces": [],
+    "events": ["database.lifecycle.state_changed"],
+    "configKeys": ["SDKWORK_<SERVICE_CODE>_DATABASE_AUTO_MIGRATE", "SDKWORK_<SERVICE_CODE>_DATABASE_SEED_ON_BOOT", "SDKWORK_DATABASE_TEST_POSTGRES_URL"]
+  },
+  "verification": {
+    "commands": [
+      "cargo test -p sdkwork-database-lifecycle",
+      "cargo test -p sdkwork-database-lifecycle --test postgres_restart_state -- --ignored --nocapture",
+      "cargo clippy -p sdkwork-database-lifecycle --all-targets -- -D warnings"
+    ]
+  }
+}

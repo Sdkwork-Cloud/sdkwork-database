@@ -1,13 +1,22 @@
 use std::collections::BTreeMap;
 
-use sdkwork_database_config::claw_database::resolve_unified_postgres_schema;
 use sdkwork_database_config::DatabaseEngine;
 use sdkwork_database_sqlx::DatabasePool;
 
 use crate::error::DriftError;
 
-fn postgres_application_schema() -> String {
-    resolve_unified_postgres_schema("SDKWORK_CLAW")
+async fn postgres_application_schema(pool: &DatabasePool) -> Result<String, DriftError> {
+    pool.postgres_schema_identity()
+        .await
+        .map_err(|error| {
+            DriftError::Introspect(format!("postgres schema identity unavailable: {error}"))
+        })?
+        .map(|identity| identity.current_schema().to_string())
+        .ok_or_else(|| {
+            DriftError::Introspect(
+                "postgres schema identity requested for a non-PostgreSQL pool".to_string(),
+            )
+        })
 }
 
 #[derive(Debug, Clone)]
@@ -114,7 +123,7 @@ pub async fn introspect_table_column_details(
             Ok(result)
         }
         DatabasePool::Postgres(pg_pool, _) => {
-            let schema = postgres_application_schema();
+            let schema = postgres_application_schema(pool).await?;
             let rows = sqlx::query_as::<_, (String, String, String, String)>(
                 "SELECT table_name, column_name, data_type, is_nullable \
                  FROM information_schema.columns \
@@ -224,7 +233,7 @@ pub async fn introspect_table_index_details(
             Ok(result)
         }
         DatabasePool::Postgres(pg_pool, _) => {
-            let schema = postgres_application_schema();
+            let schema = postgres_application_schema(pool).await?;
             let rows = sqlx::query_as::<_, (String, String, bool, Vec<String>, Option<String>)>(
                 "SELECT table_relation.relname, index_relation.relname, \
                         index_definition.indisunique, \
@@ -416,7 +425,7 @@ pub async fn introspect_table_constraint_details(
             Ok(result)
         }
         DatabasePool::Postgres(pg_pool, _) => {
-            let schema = postgres_application_schema();
+            let schema = postgres_application_schema(pool).await?;
             let rows = sqlx::query_as::<_, (String, String, String, Option<String>)>(
                 "SELECT constraint_info.table_name, \
                         constraint_info.constraint_name, \
@@ -477,7 +486,7 @@ pub async fn introspect_tables(pool: &DatabasePool) -> Result<Vec<String>, Drift
     match pool {
         DatabasePool::Sqlite(sqlite_pool, _) => sqlite_user_tables(sqlite_pool).await,
         DatabasePool::Postgres(pg_pool, _) => {
-            let schema = postgres_application_schema();
+            let schema = postgres_application_schema(pool).await?;
             let rows = sqlx::query_scalar::<_, String>(
                 "SELECT table_name \
                  FROM information_schema.tables \

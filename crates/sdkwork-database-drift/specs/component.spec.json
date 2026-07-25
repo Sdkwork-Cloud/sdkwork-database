@@ -41,11 +41,12 @@
     "dependencyApiExports": [],
     "dependencyApiSurfaces": [],
     "events": [],
-    "configKeys": []
+    "configKeys": ["SDKWORK_DATABASE_TEST_POSTGRES_URL"]
   },
   "verification": {
     "commands": [
       "cargo test -p sdkwork-database-drift",
+      "cargo test -p sdkwork-database-drift --test postgres_schema_authority -- --ignored --nocapture",
       "cargo clippy -p sdkwork-database-drift --all-targets -- -D warnings"
     ]
   }

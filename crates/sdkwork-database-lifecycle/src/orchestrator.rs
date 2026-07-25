@@ -1,11 +1,10 @@
 use std::time::Instant;
 
-use sdkwork_database_config::claw_database::resolve_unified_postgres_schema;
 use sdkwork_database_history::{
     acquire_migration_lock, ensure_history_tables, execute_sql_script,
-    execute_sql_script_atomically, fetch_installation_state, file_checksum, is_seed_applied,
-    list_applied_migration_versions, migration_checksum, record_migration, record_seed,
-    upsert_installation_state,
+    execute_sql_script_atomically, fetch_installation_state, file_checksum,
+    insert_installation_state_if_absent, is_seed_applied, list_applied_migration_versions,
+    migration_checksum, record_migration, record_seed, upsert_installation_state,
 };
 use sdkwork_database_spi::{
     types::{
@@ -47,14 +46,18 @@ impl LifecycleOrchestrator {
     }
 
     async fn init_locked(&self) -> Result<(), LifecycleError> {
-        self.emit_state_change(LifecycleState::Uninitialized, LifecycleState::Bootstrapped)
-            .await?;
         // Use default "ops_" prefix for backward compatibility
         // TODO(ARCH-1): In integrated mode, use module-specific prefix
         ensure_history_tables(&self.pool).await?;
-        self.apply_baseline_if_needed_locked().await?;
         let descriptor = self.module.descriptor();
-        upsert_installation_state(
+        if fetch_installation_state(&self.pool, &descriptor.module_id)
+            .await?
+            .is_some()
+        {
+            return Ok(());
+        }
+        self.apply_baseline_if_needed_locked().await?;
+        let created = insert_installation_state_if_absent(
             &self.pool,
             &descriptor.module_id,
             &self.module.contract_version().await?,
@@ -63,6 +66,10 @@ impl LifecycleOrchestrator {
             LifecycleState::Bootstrapped.status_label(),
         )
         .await?;
+        if created {
+            self.emit_state_change(LifecycleState::Uninitialized, LifecycleState::Bootstrapped)
+                .await?;
+        }
         Ok(())
     }
 
@@ -98,12 +105,11 @@ impl LifecycleOrchestrator {
         if !applied.is_empty() {
             return Ok(0);
         }
-        if let Some(installation) =
-            fetch_installation_state(&self.pool, &descriptor.module_id).await?
+        if fetch_installation_state(&self.pool, &descriptor.module_id)
+            .await?
+            .is_some()
         {
-            if installation.status == LifecycleState::Bootstrapped.status_label() {
-                return Ok(0);
-            }
+            return Ok(0);
         }
 
         let baseline_dir = self.module.baseline_dir(engine);
@@ -425,9 +431,6 @@ impl LifecycleOrchestrator {
     ) -> Result<bool, LifecycleError> {
         use sdkwork_database_sqlx::DatabasePool;
 
-        let descriptor = self.module.descriptor();
-        let service_prefix = format!("SDKWORK_{}", descriptor.service_code.to_uppercase());
-        let schema = resolve_unified_postgres_schema(&service_prefix);
         let query = r#"
             SELECT EXISTS (
                 SELECT 1
@@ -439,8 +442,14 @@ impl LifecycleOrchestrator {
 
         match &self.pool {
             DatabasePool::Postgres(pool, _) => {
+                let schema = self.pool.postgres_schema_identity().await?.ok_or_else(|| {
+                    LifecycleError::State(
+                        "PostgreSQL schema identity is unavailable for the lifecycle pool"
+                            .to_string(),
+                    )
+                })?;
                 let present = sqlx::query_scalar::<_, bool>(query)
-                    .bind(schema)
+                    .bind(schema.current_schema())
                     .bind(anchor_table)
                     .fetch_one(pool)
                     .await

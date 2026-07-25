@@ -7,6 +7,29 @@ use sqlx::AnyPool;
 use crate::any::create_any_pool;
 use crate::error::PoolError;
 
+/// PostgreSQL schema identity observed from a connection in this pool.
+///
+/// This is runtime database state, not a second configuration authority. The
+/// current schema is the first existing schema selected by the pool's actual
+/// `search_path`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PostgresSchemaIdentity {
+    current_schema: String,
+    search_path: String,
+}
+
+impl PostgresSchemaIdentity {
+    /// First existing schema selected by PostgreSQL for unqualified objects.
+    pub fn current_schema(&self) -> &str {
+        &self.current_schema
+    }
+
+    /// Effective PostgreSQL `search_path` reported by the connected session.
+    pub fn search_path(&self) -> &str {
+        &self.search_path
+    }
+}
+
 /// Context information for a database pool.
 #[derive(Debug, Clone)]
 pub struct PoolContext {
@@ -106,6 +129,34 @@ impl DatabasePool {
             Self::Postgres(pool, _) => Some(pool),
             _ => None,
         }
+    }
+
+    /// Resolve the canonical PostgreSQL schema from this pool's live session
+    /// settings. SQLite pools return `None`.
+    ///
+    /// Consumers must use this identity after pool creation instead of
+    /// re-reading service-specific environment variables.
+    pub async fn postgres_schema_identity(
+        &self,
+    ) -> Result<Option<PostgresSchemaIdentity>, PoolError> {
+        let Self::Postgres(pool, _) = self else {
+            return Ok(None);
+        };
+        let (current_schema, search_path) = sqlx::query_as::<_, (Option<String>, String)>(
+            "SELECT current_schema(), current_setting('search_path')",
+        )
+        .fetch_one(pool)
+        .await
+        .map_err(PoolError::Connection)?;
+        let current_schema = current_schema.ok_or_else(|| {
+            PoolError::DatabaseConfig(
+                "PostgreSQL search_path does not select an existing schema".to_string(),
+            )
+        })?;
+        Ok(Some(PostgresSchemaIdentity {
+            current_schema,
+            search_path,
+        }))
     }
 
     /// Close the pool and all connections.

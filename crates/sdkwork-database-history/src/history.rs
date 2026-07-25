@@ -1033,7 +1033,48 @@ pub async fn record_seed(
     Ok(())
 }
 
-/// Upsert the overall installation state for the module.
+/// Insert the initial installation state only when the module has no state.
+///
+/// Returns `true` only for the caller that created the row. Existing status,
+/// contract version, locale, and profile values are never modified.
+pub async fn insert_installation_state_if_absent(
+    pool: &DatabasePool,
+    module_id: &str,
+    contract_version: &str,
+    seed_locale: &str,
+    seed_profile: &str,
+    status: &str,
+) -> Result<bool, HistoryError> {
+    let query = "INSERT INTO ops_database_installation_state \
+                  (module_id, contract_version, seed_locale, seed_profile, status) \
+                  VALUES ($1, $2, $3, $4, $5) \
+                  ON CONFLICT(module_id) DO NOTHING";
+    let rows_affected = match pool {
+        DatabasePool::Sqlite(sqlite_pool, _) => sqlx::query(query)
+            .bind(module_id)
+            .bind(contract_version)
+            .bind(seed_locale)
+            .bind(seed_profile)
+            .bind(status)
+            .execute(sqlite_pool)
+            .await
+            .map_err(|error| HistoryError::State(error.to_string()))?
+            .rows_affected(),
+        DatabasePool::Postgres(postgres_pool, _) => sqlx::query(query)
+            .bind(module_id)
+            .bind(contract_version)
+            .bind(seed_locale)
+            .bind(seed_profile)
+            .bind(status)
+            .execute(postgres_pool)
+            .await
+            .map_err(|error| HistoryError::State(error.to_string()))?
+            .rows_affected(),
+    };
+    Ok(rows_affected == 1)
+}
+
+/// Upsert the overall installation state for a completed lifecycle phase.
 pub async fn upsert_installation_state(
     pool: &DatabasePool,
     module_id: &str,
@@ -1921,6 +1962,102 @@ SELECT 1;
                 .await
                 .expect("count installation states");
         assert_eq!(row_count, 2);
+    }
+
+    #[tokio::test]
+    async fn initial_installation_state_insert_preserves_existing_phase_state() {
+        let config = sdkwork_database_config::DatabaseConfig {
+            engine: DatabaseEngine::Sqlite,
+            url: "sqlite::memory:".to_string(),
+            max_connections: 1,
+            ..Default::default()
+        };
+        let pool = sdkwork_database_sqlx::create_pool_from_config(config)
+            .await
+            .expect("sqlite pool");
+        ensure_history_tables(&pool)
+            .await
+            .expect("history tables should be created");
+
+        assert!(insert_installation_state_if_absent(
+            &pool,
+            "agents",
+            "1.0.0",
+            "",
+            "",
+            "bootstrapped",
+        )
+        .await
+        .expect("initial state should be inserted"));
+        upsert_installation_state(&pool, "agents", "1.0.0", "zh-CN", "standard", "seeded")
+            .await
+            .expect("seeded state should be recorded");
+        assert!(!insert_installation_state_if_absent(
+            &pool,
+            "agents",
+            "2.0.0",
+            "",
+            "",
+            "bootstrapped",
+        )
+        .await
+        .expect("repeat initial state insert should be idempotent"));
+
+        let state = fetch_installation_state(&pool, "agents")
+            .await
+            .expect("installation state should be queryable")
+            .expect("installation state should exist");
+        assert_eq!(state.contract_version.as_deref(), Some("1.0.0"));
+        assert_eq!(state.seed_locale.as_deref(), Some("zh-CN"));
+        assert_eq!(state.seed_profile.as_deref(), Some("standard"));
+        assert_eq!(state.status, "seeded");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_initial_installation_state_insert_has_one_creator() {
+        let temp = tempfile::tempdir().expect("temporary SQLite database");
+        let config = sdkwork_database_config::DatabaseConfig {
+            engine: DatabaseEngine::Sqlite,
+            url: format!("sqlite:{}", temp.path().join("state.sqlite").display()),
+            max_connections: 2,
+            ..Default::default()
+        };
+        let pool = sdkwork_database_sqlx::create_pool_from_config(config)
+            .await
+            .expect("sqlite pool");
+        ensure_history_tables(&pool)
+            .await
+            .expect("history tables should be created");
+
+        let first = insert_installation_state_if_absent(
+            &pool,
+            "concurrent",
+            "1.0.0",
+            "",
+            "",
+            "bootstrapped",
+        );
+        let second = insert_installation_state_if_absent(
+            &pool,
+            "concurrent",
+            "1.0.0",
+            "",
+            "",
+            "bootstrapped",
+        );
+        let (first, second) = tokio::join!(first, second);
+        assert_ne!(
+            first.expect("first insert attempt"),
+            second.expect("second insert attempt")
+        );
+
+        let row_count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM ops_database_installation_state WHERE module_id = 'concurrent'",
+        )
+        .fetch_one(pool.as_sqlite().expect("sqlite pool"))
+        .await
+        .expect("installation state row count");
+        assert_eq!(row_count, 1);
     }
 
     #[tokio::test]

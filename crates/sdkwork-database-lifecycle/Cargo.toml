@@ -23,5 +23,6 @@ sqlx = { workspace = true, features = ["sqlite", "postgres"] }
 [dev-dependencies]
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+url.workspace = true
 sdkwork-database-config = { path = "../sdkwork-database-config" }
 sdkwork-database-sqlx = { path = "../sdkwork-database-sqlx" }

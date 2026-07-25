@@ -28,7 +28,8 @@
     "publicExports": ["crate-root"],
     "providedPorts": [
       {"name": "databasePool", "export": "crate-root"},
-      {"name": "processSharedDatabasePool", "export": "crate-root"}
+      {"name": "processSharedDatabasePool", "export": "crate-root"},
+      {"name": "postgresSchemaIdentity", "export": "PostgresSchemaIdentity"}
     ],
     "requiredPorts": [
       {"name": "databaseConfig", "export": "crate-root", "provider": "sdkwork-database-config"}
@@ -38,7 +39,8 @@
       "process_shared_database_pool",
       "process_shared_temporary_driver_max_connections",
       "create_pool_from_config",
-      "create_pool_from_env"
+      "create_pool_from_env",
+      "DatabasePool::postgres_schema_identity"
     ],
     "routeManifest": null,
     "sdkClients": [],

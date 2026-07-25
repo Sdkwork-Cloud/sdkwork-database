@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "kind": "sdkwork.component.spec",
+  "component": {
+    "name": "sdkwork-database-history",
+    "displayName": "SDKWork Database Lifecycle History",
+    "version": "0.1.0",
+    "type": "rust-crate",
+    "root": "sdkwork-database/crates/sdkwork-database-history",
+    "domain": "database",
+    "capability": "database-lifecycle-history",
+    "languages": ["rust"],
+    "generated": false,
+    "status": "active",
+    "manifests": ["Cargo.toml", "specs/component.spec.json"]
+  },
+  "canonicalSpecs": [
+    {"file": "CODE_STYLE_SPEC.md", "path": "../../../sdkwork-specs/CODE_STYLE_SPEC.md", "purpose": "Authored source structure and typed error rules."},
+    {"file": "NAMING_SPEC.md", "path": "../../../sdkwork-specs/NAMING_SPEC.md", "purpose": "Canonical Rust and database naming."},
+    {"file": "RUST_CODE_SPEC.md", "path": "../../../sdkwork-specs/RUST_CODE_SPEC.md", "purpose": "Rust persistence module boundaries."},
+    {"file": "DATABASE_SPEC.md", "path": "../../../sdkwork-specs/DATABASE_SPEC.md", "purpose": "Idempotency, transactions, and database consistency."},
+    {"file": "DATABASE_FRAMEWORK_SPEC.md", "path": "../../../sdkwork-specs/DATABASE_FRAMEWORK_SPEC.md", "purpose": "Lifecycle history and state-machine persistence."},
+    {"file": "TEST_SPEC.md", "path": "../../../sdkwork-specs/TEST_SPEC.md", "purpose": "Cross-engine persistence verification."}
+  ],
+  "contracts": {
+    "layerRole": "backend-provider",
+    "publicExports": ["crate-root"],
+    "providedPorts": [
+      {"name": "databaseLifecycleHistory", "export": "crate-root"},
+      {"name": "databaseInstallationState", "export": "crate-root"},
+      {"name": "databaseLifecycleLock", "export": "crate-root"}
+    ],
+    "requiredPorts": [
+      {"name": "databasePool", "export": "crate-root", "provider": "sdkwork-database-sqlx"}
+    ],
+    "runtimeEntrypoints": [],
+    "routeManifest": null,
+    "sdkClients": [],
+    "sdkDependencies": [],
+    "dependencyApiExports": [],
+    "dependencyApiSurfaces": [],
+    "events": [],
+    "configKeys": []
+  },
+  "verification": {
+    "commands": [
+      "cargo test -p sdkwork-database-history",
+      "cargo clippy -p sdkwork-database-history --all-targets -- -D warnings"
+    ]
+  }
+}
