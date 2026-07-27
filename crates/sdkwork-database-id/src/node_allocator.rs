@@ -32,7 +32,6 @@ use sdkwork_database_sqlx::DatabasePool;
 use sdkwork_id_core::{
     max_snowflake_node_id, SnowflakeIdError, SnowflakeIdGenerator, SnowflakeLeaseGuard,
 };
-use tokio::sync::OnceCell;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
@@ -166,8 +165,13 @@ impl NodeLease {
     /// Returns whether this process still owns the node lease.
     pub fn is_healthy(&self) -> bool {
         self.inner
-            .lease_guard
-            .allows(current_epoch_millis().max(0) as u64)
+            .heartbeat_handle
+            .as_ref()
+            .is_some_and(|handle| !handle.is_finished())
+            && self
+                .inner
+                .lease_guard
+                .allows(current_epoch_millis().max(0) as u64)
     }
 
     /// Monotonic fencing version assigned by the registry row.
@@ -205,7 +209,14 @@ impl std::fmt::Debug for NodeLease {
 /// from a shared `sdkwork_node_registry` table.
 pub struct SnowflakeNodeAllocator;
 
-static PROCESS_GENERATOR: OnceCell<(SnowflakeIdGenerator, NodeLease, u64)> = OnceCell::const_new();
+struct ProcessGeneratorEntry {
+    generator: SnowflakeIdGenerator,
+    lease: NodeLease,
+    authority_fingerprint: u64,
+}
+
+static PROCESS_GENERATOR: tokio::sync::Mutex<Option<ProcessGeneratorEntry>> =
+    tokio::sync::Mutex::const_new(None);
 
 impl SnowflakeNodeAllocator {
     /// Allocate a node_id from the database.
@@ -303,19 +314,30 @@ impl SnowflakeNodeAllocator {
         config: &NodeAllocatorConfig,
     ) -> Result<(SnowflakeIdGenerator, NodeLease), NodeAllocatorError> {
         let authority_fingerprint = database_authority_fingerprint(pool);
-        let pair = PROCESS_GENERATOR
-            .get_or_try_init(|| async {
-                let (generator, lease) = Self::allocate_generator(pool, config).await?;
-                Ok::<_, NodeAllocatorError>((generator, lease, authority_fingerprint))
-            })
-            .await?;
-        if pair.2 != authority_fingerprint {
-            return Err(NodeAllocatorError::InvalidConfig(
-                "all process modules must use the same Snowflake node registry authority"
-                    .to_string(),
-            ));
+        let mut entry = PROCESS_GENERATOR.lock().await;
+        if let Some(installed) = entry.as_ref() {
+            if installed.authority_fingerprint != authority_fingerprint {
+                return Err(NodeAllocatorError::InvalidConfig(
+                    "all process modules must use the same Snowflake node registry authority"
+                        .to_string(),
+                ));
+            }
+            if installed.lease.is_healthy() {
+                return Ok((installed.generator.clone(), installed.lease.clone()));
+            }
+            warn!(
+                node_id = installed.lease.node_id(),
+                "replacing unhealthy process Snowflake node lease"
+            );
         }
-        Ok((pair.0.clone(), pair.1.clone()))
+
+        let (generator, lease) = Self::allocate_generator(pool, config).await?;
+        *entry = Some(ProcessGeneratorEntry {
+            generator: generator.clone(),
+            lease: lease.clone(),
+            authority_fingerprint,
+        });
+        Ok((generator, lease))
     }
 
     /// High-level: create a pool from environment, allocate, and return
@@ -1258,6 +1280,25 @@ mod tests {
         assert!(id2 > id1);
         assert!(first_lease.is_healthy());
         assert!(second_lease.is_healthy());
+
+        first_lease
+            .inner
+            .heartbeat_handle
+            .as_ref()
+            .expect("process lease heartbeat")
+            .abort();
+        tokio::task::yield_now().await;
+        assert!(!first_lease.is_healthy());
+
+        let (replacement, replacement_lease) =
+            SnowflakeNodeAllocator::allocate_process_generator(&pool, &config)
+                .await
+                .unwrap();
+        assert_ne!(replacement.node_id(), first.node_id());
+        assert!(replacement_lease.is_healthy());
+        assert!(replacement.generate().is_ok());
+
+        drop(replacement_lease);
         drop(second_lease);
         drop(first_lease);
     }
