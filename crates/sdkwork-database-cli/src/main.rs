@@ -174,8 +174,7 @@ async fn resolve_pool(service_code: &str) -> anyhow::Result<DatabasePool> {
     match create_pool_from_env(service_code).await? {
         Some(pool) => Ok(pool),
         None => anyhow::bail!(
-            "database URL not configured; set SDKWORK_{}_DATABASE_URL",
-            service_code
+            "database URL not configured for module {service_code}; set SDKWORK_DATABASE_*"
         ),
     }
 }

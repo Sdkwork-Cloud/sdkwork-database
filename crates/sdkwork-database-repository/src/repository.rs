@@ -289,6 +289,7 @@ macro_rules! impl_repository {
                     );
 
                     match &self.pool {
+                        #[cfg(feature = "sqlite")]
                         sdkwork_database_sqlx::DatabasePool::Sqlite(pool, _) => {
                             let mut query = sqlx::query(&sql);
                             let json = entity.to_json();
@@ -359,6 +360,7 @@ macro_rules! impl_repository {
                     let sql = format!("SELECT * FROM {} WHERE {} = $1", table, pk_col);
 
                     match &self.pool {
+                        #[cfg(feature = "sqlite")]
                         sdkwork_database_sqlx::DatabasePool::Sqlite(pool, _) => {
                             let row = sqlx::query(&sql)
                                 .bind(id)
@@ -393,6 +395,7 @@ macro_rules! impl_repository {
                     let sql = format!("SELECT * FROM {} {}", table, where_clause);
 
                     match &self.pool {
+                        #[cfg(feature = "sqlite")]
                         sdkwork_database_sqlx::DatabasePool::Sqlite(pool, _) => {
                             let mut q = sqlx::query(&sql);
                             for param in params {
@@ -440,6 +443,7 @@ macro_rules! impl_repository {
                     );
 
                     match &self.pool {
+                        #[cfg(feature = "sqlite")]
                         sdkwork_database_sqlx::DatabasePool::Sqlite(pool, _) => {
                             let mut query = sqlx::query(&sql);
                             let json = entity.to_json();
@@ -516,6 +520,7 @@ macro_rules! impl_repository {
                     let sql = format!("DELETE FROM {} WHERE {} = $1", table, pk_col);
 
                     match &self.pool {
+                        #[cfg(feature = "sqlite")]
                         sdkwork_database_sqlx::DatabasePool::Sqlite(pool, _) => {
                             sqlx::query(&sql)
                                 .bind(id)
@@ -541,6 +546,7 @@ macro_rules! impl_repository {
                     let sql = format!("SELECT COUNT(*) as count FROM {} {}", table, where_clause);
 
                     match &self.pool {
+                        #[cfg(feature = "sqlite")]
                         sdkwork_database_sqlx::DatabasePool::Sqlite(pool, _) => {
                             let mut q = sqlx::query(&sql);
                             for param in params {

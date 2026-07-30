@@ -7,17 +7,30 @@ license.workspace = true
 repository.workspace = true
 description = "Unified repository pattern abstraction for SDKWork database operations"
 
+[features]
+default = ["postgres"]
+postgres = [
+    "sqlx/postgres",
+    "sdkwork-database-sqlx/postgres",
+    "sdkwork-database-id/postgres",
+]
+sqlite = [
+    "sqlx/sqlite",
+    "sdkwork-database-sqlx/sqlite",
+    "sdkwork-database-id/sqlite",
+]
+
 [dependencies]
 sdkwork-database-config = { path = "../sdkwork-database-config" }
-sdkwork-database-sqlx = { path = "../sdkwork-database-sqlx" }
-sdkwork-database-id = { workspace = true }
+sdkwork-database-sqlx = { path = "../sdkwork-database-sqlx", default-features = false }
+sdkwork-database-id = { workspace = true, default-features = false }
 
 # Async runtime
 tokio = { workspace = true }
 async-trait = { workspace = true }
 
 # Database
-sqlx = { workspace = true, features = ["sqlite", "postgres"] }
+sqlx.workspace = true
 
 # Serialization
 serde = { workspace = true }

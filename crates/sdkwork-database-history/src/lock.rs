@@ -12,28 +12,39 @@
 //! * In-memory SQLite databases use an in-process async mutex.  They cannot
 //!   provide cross-process coordination because there is no shared file.
 
+#[cfg(feature = "sqlite")]
 use std::collections::HashMap;
+#[cfg(feature = "sqlite")]
 use std::path::{Path, PathBuf};
+#[cfg(feature = "postgres")]
 use std::str::FromStr;
+#[cfg(feature = "sqlite")]
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use sdkwork_database_config::DatabaseEngine;
 use sdkwork_database_sqlx::DatabasePool;
+#[cfg(feature = "postgres")]
 use sha2::{Digest, Sha256};
+#[cfg(feature = "postgres")]
 use sqlx::postgres::{PgConnectOptions, PgConnection, PgSslMode};
+#[cfg(feature = "sqlite")]
 use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection, SqliteJournalMode, SqliteSynchronous};
 use sqlx::Connection;
+#[cfg(feature = "sqlite")]
 use tokio::sync::OwnedMutexGuard;
 
 use crate::error::HistoryError;
 
 const DEFAULT_LOCK_TIMEOUT: Duration = Duration::from_secs(300);
 const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(100);
+#[cfg(feature = "sqlite")]
 const SQLITE_BUSY_RETRY_INTERVAL: Duration = Duration::from_millis(250);
 
+#[cfg(feature = "sqlite")]
 type MemoryLock = Arc<tokio::sync::Mutex<()>>;
 
+#[cfg(feature = "sqlite")]
 static MEMORY_LOCKS: OnceLock<Mutex<HashMap<String, MemoryLock>>> = OnceLock::new();
 
 /// A held database lifecycle lock.
@@ -47,16 +58,22 @@ pub struct MigrationLockGuard {
 }
 
 enum MigrationLockInner {
+    #[cfg(feature = "sqlite")]
     Memory(OwnedMutexGuard<()>),
+    #[cfg(feature = "sqlite")]
     Sqlite(SqliteConnection),
+    #[cfg(feature = "postgres")]
     Postgres { connection: PgConnection, key: i64 },
 }
 
 impl std::fmt::Debug for MigrationLockGuard {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let kind = match self.inner.as_ref() {
+            #[cfg(feature = "sqlite")]
             Some(MigrationLockInner::Memory(_)) => "memory",
+            #[cfg(feature = "sqlite")]
             Some(MigrationLockInner::Sqlite(_)) => "sqlite",
+            #[cfg(feature = "postgres")]
             Some(MigrationLockInner::Postgres { .. }) => "postgres",
             None => "released",
         };
@@ -85,10 +102,12 @@ impl MigrationLockGuard {
         };
 
         match inner {
+            #[cfg(feature = "sqlite")]
             MigrationLockInner::Memory(guard) => {
                 drop(guard);
                 Ok(())
             }
+            #[cfg(feature = "sqlite")]
             MigrationLockInner::Sqlite(mut connection) => {
                 let result = sqlx::query("COMMIT")
                     .execute(&mut connection)
@@ -105,6 +124,7 @@ impl MigrationLockGuard {
                 }
                 result.map(|_| ())
             }
+            #[cfg(feature = "postgres")]
             MigrationLockInner::Postgres {
                 mut connection,
                 key,
@@ -158,11 +178,36 @@ pub async fn acquire_migration_lock_with_timeout(
     }
 
     match pool.engine() {
-        DatabaseEngine::Sqlite => acquire_sqlite_lock(pool, timeout).await,
-        DatabaseEngine::Postgres => acquire_postgres_lock(pool, module_id, timeout).await,
+        DatabaseEngine::Sqlite => {
+            #[cfg(feature = "sqlite")]
+            {
+                acquire_sqlite_lock(pool, timeout).await
+            }
+            #[cfg(not(feature = "sqlite"))]
+            {
+                Err(HistoryError::Migration(
+                    "SQLite migration locks require the sdkwork-database-history sqlite feature"
+                        .to_string(),
+                ))
+            }
+        }
+        DatabaseEngine::Postgres => {
+            #[cfg(feature = "postgres")]
+            {
+                acquire_postgres_lock(pool, module_id, timeout).await
+            }
+            #[cfg(not(feature = "postgres"))]
+            {
+                Err(HistoryError::Migration(
+                    "PostgreSQL migration locks require the sdkwork-database-history postgres feature"
+                        .to_string(),
+                ))
+            }
+        }
     }
 }
 
+#[cfg(feature = "sqlite")]
 async fn acquire_sqlite_lock(
     pool: &DatabasePool,
     timeout: Duration,
@@ -219,6 +264,7 @@ async fn acquire_sqlite_lock(
         {
             Ok(_) => {
                 return Ok(MigrationLockGuard {
+                    #[cfg(feature = "sqlite")]
                     inner: Some(MigrationLockInner::Sqlite(connection)),
                 });
             }
@@ -239,6 +285,7 @@ async fn acquire_sqlite_lock(
     }
 }
 
+#[cfg(feature = "postgres")]
 async fn acquire_postgres_lock(
     pool: &DatabasePool,
     module_id: &str,
@@ -294,6 +341,7 @@ async fn acquire_postgres_lock(
     }
 }
 
+#[cfg(feature = "sqlite")]
 fn memory_lock(key: &str) -> Result<MemoryLock, HistoryError> {
     let locks = MEMORY_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut locks = locks.lock().map_err(|_| {
@@ -309,6 +357,7 @@ fn lock_timeout(kind: &str) -> HistoryError {
     HistoryError::Migration(format!("migration_lock_timeout ({kind})"))
 }
 
+#[cfg(feature = "sqlite")]
 fn sqlite_busy_error(message: &str) -> bool {
     let message = message.to_ascii_lowercase();
     message.contains("database is locked")
@@ -317,6 +366,7 @@ fn sqlite_busy_error(message: &str) -> bool {
         || message.contains("busy")
 }
 
+#[cfg(feature = "postgres")]
 fn advisory_key(table_prefix: &str, module_id: &str) -> i64 {
     let mut digest = Sha256::new();
     digest.update(b"sdkwork-database-migration-lock\0");
@@ -334,6 +384,7 @@ fn advisory_key(table_prefix: &str, module_id: &str) -> i64 {
     }
 }
 
+#[cfg(feature = "sqlite")]
 fn sqlite_lock_path(database_path: &Path) -> PathBuf {
     PathBuf::from(format!(
         "{}.sdkwork-migration-lock.sqlite",
@@ -346,6 +397,7 @@ fn sqlite_lock_path(database_path: &Path) -> PathBuf {
 /// SQLx accepts both `sqlite:path.db` and URI-style `sqlite://path.db` forms.
 /// Memory/URI-memory databases intentionally return `None`, because no file
 /// exists that another process could lock.
+#[cfg(feature = "sqlite")]
 fn sqlite_database_path(url: &str) -> Option<PathBuf> {
     let lower = url.to_ascii_lowercase();
     let query = lower.split_once('?').map(|(_, query)| query).unwrap_or("");
@@ -386,10 +438,14 @@ fn sqlite_database_path(url: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "sqlite")]
     use sdkwork_database_config::{DatabaseConfig, DatabaseEngine};
+    #[cfg(feature = "sqlite")]
     use sdkwork_database_sqlx::create_pool_from_config;
+    #[cfg(feature = "sqlite")]
     use tempfile::TempDir;
 
+    #[cfg(feature = "sqlite")]
     #[test]
     fn resolves_sqlite_file_url_forms() {
         assert!(sqlite_database_path("sqlite::memory:").is_none());
@@ -408,6 +464,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "postgres")]
     #[test]
     fn advisory_key_is_stable_and_non_zero() {
         assert_eq!(advisory_key("demo_", "demo"), advisory_key("demo_", "demo"));
@@ -418,6 +475,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn sqlite_file_lock_serializes_processes_without_consuming_business_pool() {
         let temp = TempDir::new().expect("temporary directory");
@@ -460,6 +518,7 @@ mod tests {
         second_pool.close().await;
     }
 
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn sqlite_memory_lock_is_released_on_guard_drop() {
         let config = DatabaseConfig {

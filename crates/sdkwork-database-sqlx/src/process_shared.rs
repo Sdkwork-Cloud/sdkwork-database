@@ -2,6 +2,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use sdkwork_database_config::workspace_database::normalize_workspace_postgres_url;
 use sdkwork_database_config::{DatabaseConfig, DatabaseEngine, PgSslMode};
+#[cfg(feature = "any")]
 use sqlx::AnyPool;
 use tokio::sync::OnceCell;
 use url::Url;
@@ -12,6 +13,7 @@ const DATABASE_POOL_DRIVER: &str = "sqlx::DatabasePool";
 
 static PROCESS_POOL_ENABLED: AtomicBool = AtomicBool::new(false);
 static PROCESS_POOL: OnceCell<ProcessPoolEntry> = OnceCell::const_new();
+#[cfg(feature = "any")]
 static TEMPORARY_ANY_POOL: OnceCell<TemporaryAnyPoolEntry> = OnceCell::const_new();
 
 struct ProcessPoolEntry {
@@ -21,6 +23,7 @@ struct ProcessPoolEntry {
     temporary_driver_max_connections: u32,
 }
 
+#[cfg(feature = "any")]
 struct TemporaryAnyPoolEntry {
     identity: DatabaseIdentity,
     pool: AnyPool,
@@ -175,6 +178,7 @@ pub(crate) async fn create_or_reuse_process_pool(
     Ok(entry.pool.clone())
 }
 
+#[cfg(feature = "any")]
 pub(crate) async fn create_or_reuse_temporary_any_pool(
     config: DatabaseConfig,
 ) -> Result<AnyPool, PoolError> {

@@ -2,8 +2,10 @@ use std::fmt;
 use std::time::Instant;
 
 use sdkwork_database_config::{DatabaseConfig, DatabaseEngine, DeploymentMode};
+#[cfg(feature = "any")]
 use sqlx::AnyPool;
 
+#[cfg(feature = "any")]
 use crate::any::create_any_pool;
 use crate::error::PoolError;
 
@@ -56,14 +58,15 @@ impl PoolContext {
 
 /// Unified database pool enum.
 ///
-/// This enum wraps either a SQLite or PostgreSQL connection pool,
-/// providing a unified interface for pool operations.
+/// This enum wraps the database drivers enabled at compile time.
 #[derive(Clone)]
 pub enum DatabasePool {
     /// SQLite connection pool.
+    #[cfg(feature = "sqlite")]
     Sqlite(sqlx::SqlitePool, PoolContext),
 
     /// PostgreSQL connection pool.
+    #[cfg(feature = "postgres")]
     Postgres(sqlx::PgPool, PoolContext),
 }
 
@@ -82,7 +85,9 @@ impl DatabasePool {
     /// Get the pool context.
     pub fn context(&self) -> &PoolContext {
         match self {
+            #[cfg(feature = "sqlite")]
             Self::Sqlite(_, ctx) => ctx,
+            #[cfg(feature = "postgres")]
             Self::Postgres(_, ctx) => ctx,
         }
     }
@@ -110,24 +115,30 @@ impl DatabasePool {
     /// Get the database engine type.
     pub fn engine(&self) -> DatabaseEngine {
         match self {
+            #[cfg(feature = "sqlite")]
             Self::Sqlite(_, _) => DatabaseEngine::Sqlite,
+            #[cfg(feature = "postgres")]
             Self::Postgres(_, _) => DatabaseEngine::Postgres,
         }
     }
 
     /// Get the underlying SQLite pool, if this is a SQLite pool.
+    #[cfg(feature = "sqlite")]
     pub fn as_sqlite(&self) -> Option<&sqlx::SqlitePool> {
         match self {
             Self::Sqlite(pool, _) => Some(pool),
-            _ => None,
+            #[cfg(feature = "postgres")]
+            Self::Postgres(_, _) => None,
         }
     }
 
     /// Get the underlying PostgreSQL pool, if this is a PostgreSQL pool.
+    #[cfg(feature = "postgres")]
     pub fn as_postgres(&self) -> Option<&sqlx::PgPool> {
         match self {
             Self::Postgres(pool, _) => Some(pool),
-            _ => None,
+            #[cfg(feature = "sqlite")]
+            Self::Sqlite(_, _) => None,
         }
     }
 
@@ -139,30 +150,40 @@ impl DatabasePool {
     pub async fn postgres_schema_identity(
         &self,
     ) -> Result<Option<PostgresSchemaIdentity>, PoolError> {
-        let Self::Postgres(pool, _) = self else {
-            return Ok(None);
-        };
-        let (current_schema, search_path) = sqlx::query_as::<_, (Option<String>, String)>(
-            "SELECT current_schema(), current_setting('search_path')",
-        )
-        .fetch_one(pool)
-        .await
-        .map_err(PoolError::Connection)?;
-        let current_schema = current_schema.ok_or_else(|| {
-            PoolError::DatabaseConfig(
-                "PostgreSQL search_path does not select an existing schema".to_string(),
+        #[cfg(feature = "postgres")]
+        {
+            let pool = match self {
+                Self::Postgres(pool, _) => pool,
+                #[cfg(feature = "sqlite")]
+                Self::Sqlite(_, _) => return Ok(None),
+            };
+            let (current_schema, search_path) = sqlx::query_as::<_, (Option<String>, String)>(
+                "SELECT current_schema(), current_setting('search_path')",
             )
-        })?;
-        Ok(Some(PostgresSchemaIdentity {
-            current_schema,
-            search_path,
-        }))
+            .fetch_one(pool)
+            .await
+            .map_err(PoolError::Connection)?;
+            let current_schema = current_schema.ok_or_else(|| {
+                PoolError::DatabaseConfig(
+                    "PostgreSQL search_path does not select an existing schema".to_string(),
+                )
+            })?;
+            Ok(Some(PostgresSchemaIdentity {
+                current_schema,
+                search_path,
+            }))
+        }
+
+        #[cfg(not(feature = "postgres"))]
+        Ok(None)
     }
 
     /// Close the pool and all connections.
     pub async fn close(&self) {
         match self {
+            #[cfg(feature = "sqlite")]
             Self::Sqlite(pool, _) => pool.close().await,
+            #[cfg(feature = "postgres")]
             Self::Postgres(pool, _) => pool.close().await,
         }
     }
@@ -170,7 +191,9 @@ impl DatabasePool {
     /// Get the number of idle connections.
     pub fn num_idle(&self) -> usize {
         match self {
+            #[cfg(feature = "sqlite")]
             Self::Sqlite(pool, _) => pool.num_idle(),
+            #[cfg(feature = "postgres")]
             Self::Postgres(pool, _) => pool.num_idle(),
         }
     }
@@ -178,7 +201,9 @@ impl DatabasePool {
     /// Get the total size of the pool.
     pub fn size(&self) -> u32 {
         match self {
+            #[cfg(feature = "sqlite")]
             Self::Sqlite(pool, _) => pool.size(),
+            #[cfg(feature = "postgres")]
             Self::Postgres(pool, _) => pool.size(),
         }
     }
@@ -190,10 +215,12 @@ impl DatabasePool {
     /// Returns the number of rows affected.
     pub async fn execute_raw(&self, sql: &str) -> Result<u64, PoolError> {
         match self {
+            #[cfg(feature = "sqlite")]
             Self::Sqlite(sqlite_pool, _) => {
                 let result = sqlx::raw_sql(sql).execute(sqlite_pool).await?;
                 Ok(result.rows_affected())
             }
+            #[cfg(feature = "postgres")]
             Self::Postgres(pg_pool, _) => {
                 let result = sqlx::raw_sql(sql).execute(pg_pool).await?;
                 Ok(result.rows_affected())
@@ -204,10 +231,12 @@ impl DatabasePool {
     /// Check if the pool has active connections by running a simple query.
     pub async fn test_connection(&self) -> Result<bool, PoolError> {
         match self {
+            #[cfg(feature = "sqlite")]
             Self::Sqlite(sqlite_pool, _) => Ok(sqlx::query("SELECT 1")
                 .fetch_optional(sqlite_pool)
                 .await?
                 .is_some()),
+            #[cfg(feature = "postgres")]
             Self::Postgres(pg_pool, _) => Ok(sqlx::query("SELECT 1")
                 .fetch_optional(pg_pool)
                 .await?
@@ -363,6 +392,7 @@ pub async fn create_pool_from_config(config: DatabaseConfig) -> Result<DatabaseP
 }
 
 /// Create a sqlx AnyPool from a configuration.
+#[cfg(feature = "any")]
 pub async fn create_any_pool_from_config(config: DatabaseConfig) -> Result<AnyPool, PoolError> {
     if crate::process_shared::process_shared_database_pool_enabled() {
         return crate::process_shared::create_or_reuse_temporary_any_pool(config).await;
@@ -372,6 +402,7 @@ pub async fn create_any_pool_from_config(config: DatabaseConfig) -> Result<AnyPo
 }
 
 /// Create a sqlx AnyPool from environment variables.
+#[cfg(feature = "any")]
 pub async fn create_any_pool_from_env(service_name: &str) -> Result<Option<AnyPool>, PoolError> {
     let config = match DatabaseConfig::from_env(service_name) {
         Ok(config) => config,
@@ -382,6 +413,7 @@ pub async fn create_any_pool_from_env(service_name: &str) -> Result<Option<AnyPo
     Ok(Some(create_any_pool_from_config(config).await?))
 }
 
+#[cfg(feature = "any")]
 fn normalize_config_engine(mut config: DatabaseConfig) -> Result<DatabaseConfig, PoolError> {
     if config.url.is_empty() {
         return Err(PoolError::InvalidUrl(
@@ -411,6 +443,7 @@ pub async fn create_pool_from_toml(path: &std::path::Path) -> Result<DatabasePoo
 mod tests {
     use super::*;
 
+    #[cfg(all(feature = "any", feature = "sqlite"))]
     #[tokio::test]
     async fn test_create_any_pool_from_config() {
         let config = DatabaseConfig {

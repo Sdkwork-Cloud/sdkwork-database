@@ -344,9 +344,9 @@ impl SnowflakeNodeAllocator {
     /// a generator + lease.
     ///
     /// `service_name` is the logical service identifier for the node
-    /// registry. `db_service_name` is the SDKWork database service name
-    /// used to resolve `SDKWORK_{NAME}_DATABASE_*` env vars (e.g.
-    /// `"MEMORY"` for Memory services, `"IM"` for IM services).
+    /// registry. `db_service_name` identifies module table ownership;
+    /// connection identity and pool policy always resolve from
+    /// `SDKWORK_DATABASE_*`.
     pub async fn allocate_generator_from_env(
         service_name: &str,
         db_service_name: &str,
@@ -424,6 +424,7 @@ fn normalized_database_authority(url: &str) -> String {
 // Internal: table creation
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "postgres")]
 const CREATE_POSTGRES_TABLE_SQL: &str = concat!(
     "CREATE TABLE IF NOT EXISTS sdkwork_node_registry (\n",
     "    node_id INTEGER PRIMARY KEY CHECK (node_id BETWEEN 0 AND 1023),\n",
@@ -439,6 +440,7 @@ const CREATE_POSTGRES_TABLE_SQL: &str = concat!(
     ")"
 );
 
+#[cfg(feature = "sqlite")]
 const CREATE_SQLITE_TABLE_SQL: &str = concat!(
     "CREATE TABLE IF NOT EXISTS sdkwork_node_registry (\n",
     "    node_id INTEGER PRIMARY KEY CHECK (node_id BETWEEN 0 AND 1023),\n",
@@ -456,6 +458,7 @@ const CREATE_SQLITE_TABLE_SQL: &str = concat!(
 
 async fn ensure_registry_table(pool: &DatabasePool) -> Result<(), NodeAllocatorError> {
     match pool {
+        #[cfg(feature = "postgres")]
         DatabasePool::Postgres(pg, _) => {
             sqlx::query(CREATE_POSTGRES_TABLE_SQL)
                 .execute(pg)
@@ -463,6 +466,7 @@ async fn ensure_registry_table(pool: &DatabasePool) -> Result<(), NodeAllocatorE
                 .map_err(|e| NodeAllocatorError::Database(format!("create table: {e}")))?;
             ensure_postgres_registry_schema(pg).await?;
         }
+        #[cfg(feature = "sqlite")]
         DatabasePool::Sqlite(sqlite, _) => {
             sqlx::query(CREATE_SQLITE_TABLE_SQL)
                 .execute(sqlite)
@@ -485,6 +489,7 @@ async fn ensure_registry_table(pool: &DatabasePool) -> Result<(), NodeAllocatorE
     Ok(())
 }
 
+#[cfg(feature = "postgres")]
 async fn ensure_postgres_registry_schema(pool: &sqlx::PgPool) -> Result<(), NodeAllocatorError> {
     let columns: Vec<(String, String, Option<String>)> = sqlx::query_as(
         "SELECT column_name, data_type, column_default FROM information_schema.columns \
@@ -557,6 +562,7 @@ async fn ensure_postgres_registry_schema(pool: &sqlx::PgPool) -> Result<(), Node
     Ok(())
 }
 
+#[cfg(feature = "sqlite")]
 async fn ensure_sqlite_column(
     pool: &sqlx::SqlitePool,
     column_name: &str,
@@ -637,6 +643,7 @@ async fn fetch_active_node_ids(
     now_ms: i64,
 ) -> Result<Vec<u16>, NodeAllocatorError> {
     match pool {
+        #[cfg(feature = "postgres")]
         DatabasePool::Postgres(pg, _) => {
             let rows: Vec<(i32, i64, i64)> = sqlx::query_as(
                 "WITH clock AS MATERIALIZED (\
@@ -654,6 +661,7 @@ async fn fetch_active_node_ids(
                 rows.first().map_or(now_ms, |row| row.2),
             )
         }
+        #[cfg(feature = "sqlite")]
         DatabasePool::Sqlite(sqlite, _) => {
             let rows: Vec<(i64, i64)> = sqlx::query_as(
                 "SELECT node_id, expires_at_ms FROM sdkwork_node_registry ORDER BY node_id",
@@ -713,11 +721,12 @@ async fn try_insert(
     hostname: &str,
     pid: i64,
     lease_token: &str,
-    started_at_ms: i64,
+    _started_at_ms: i64,
     now_ms: i64,
     expires_at_ms: i64,
 ) -> Result<Option<i64>, NodeAllocatorError> {
     match pool {
+        #[cfg(feature = "postgres")]
         DatabasePool::Postgres(pg, _) => {
             let row: Option<(i64,)> = sqlx::query_as(
                 "WITH clock AS (SELECT (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT AS now_ms) \
@@ -750,6 +759,7 @@ async fn try_insert(
             .map_err(|e| NodeAllocatorError::Database(format!("insert: {e}")))?;
             Ok(row.map(|value| value.0))
         }
+        #[cfg(feature = "sqlite")]
         DatabasePool::Sqlite(sqlite, _) => {
             let row: Option<(i64,)> = sqlx::query_as(
                 "INSERT INTO sdkwork_node_registry \
@@ -775,7 +785,7 @@ async fn try_insert(
             .bind(hostname)
             .bind(pid)
             .bind(lease_token)
-            .bind(started_at_ms)
+            .bind(_started_at_ms)
             .bind(now_ms)
             .bind(expires_at_ms)
             .bind(now_ms)
@@ -867,6 +877,7 @@ async fn renew_lease(
     expires_at_ms: i64,
 ) -> Result<bool, String> {
     match pool {
+        #[cfg(feature = "postgres")]
         DatabasePool::Postgres(pg, _) => {
             let result = sqlx::query(
                 "WITH clock AS (SELECT (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT AS now_ms) \
@@ -885,6 +896,7 @@ async fn renew_lease(
             .map_err(|e| e.to_string())?;
             Ok(result.rows_affected() == 1)
         }
+        #[cfg(feature = "sqlite")]
         DatabasePool::Sqlite(sqlite, _) => {
             let result = sqlx::query(
                 "UPDATE sdkwork_node_registry \
@@ -970,9 +982,12 @@ fn current_epoch_millis() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "sqlite")]
     use sdkwork_database_config::{DatabaseConfig, DatabaseEngine, DeploymentMode};
+    #[cfg(feature = "sqlite")]
     use sdkwork_database_sqlx::create_pool_from_config;
 
+    #[cfg(feature = "sqlite")]
     async fn create_sqlite_pool() -> DatabasePool {
         let config = DatabaseConfig {
             engine: DatabaseEngine::Sqlite,
@@ -1020,6 +1035,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn allocate_creates_table_and_returns_valid_node_id() {
         let pool = create_sqlite_pool().await;
@@ -1031,6 +1047,7 @@ mod tests {
         pool.close().await;
     }
 
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn active_lease_is_not_reclaimed_by_same_identity() {
         let pool = create_sqlite_pool().await;
@@ -1055,6 +1072,7 @@ mod tests {
         pool.close().await;
     }
 
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn allocate_assigns_different_ids_to_different_services() {
         let pool = create_sqlite_pool().await;
@@ -1076,6 +1094,7 @@ mod tests {
         pool.close().await;
     }
 
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn allocate_reuses_expired_node_id() {
         let pool = create_sqlite_pool().await;
@@ -1120,6 +1139,7 @@ mod tests {
         pool.close().await;
     }
 
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn allocate_generator_returns_working_generator() {
         let pool = create_sqlite_pool().await;
@@ -1139,6 +1159,7 @@ mod tests {
         pool.close().await;
     }
 
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn concurrent_allocators_receive_distinct_nodes() {
         let pool = create_sqlite_pool().await;
@@ -1161,6 +1182,7 @@ mod tests {
         pool.close().await;
     }
 
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn ownership_token_change_fences_generator() {
         let pool = create_sqlite_pool().await;
@@ -1188,6 +1210,7 @@ mod tests {
         pool.close().await;
     }
 
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn legacy_sqlite_registry_is_expanded_without_data_loss() {
         let pool = create_sqlite_pool().await;
@@ -1217,6 +1240,7 @@ mod tests {
         pool.close().await;
     }
 
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn corrupted_expired_node_id_is_rejected_before_allocation() {
         let pool = create_sqlite_pool().await;
@@ -1258,6 +1282,7 @@ mod tests {
         pool.close().await;
     }
 
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn process_allocator_shares_one_generator_and_lease() {
         let pool = create_sqlite_pool().await;

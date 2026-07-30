@@ -7,6 +7,12 @@ license.workspace = true
 repository.workspace = true
 description = "Sqlx-based database connection pool implementation for SDKWork"
 
+[features]
+default = ["postgres"]
+postgres = ["sqlx/postgres"]
+sqlite = ["sqlx/sqlite", "dep:libsqlite3-sys"]
+any = ["sqlx/any"]
+
 [dependencies]
 sdkwork-database-config = { path = "../sdkwork-database-config" }
 
@@ -14,8 +20,8 @@ sdkwork-database-config = { path = "../sdkwork-database-config" }
 tokio = { workspace = true }
 
 # Database
-sqlx = { workspace = true, features = ["sqlite", "postgres", "any"] }
-libsqlite3-sys.workspace = true
+sqlx.workspace = true
+libsqlite3-sys = { workspace = true, optional = true }
 
 # Serialization
 serde = { workspace = true }

@@ -69,6 +69,7 @@ impl HealthChecker {
     pub async fn check(&self) -> Result<HealthCheckResult, RepositoryError> {
         // Test connection with a simple query
         let latency = match &self.pool {
+            #[cfg(feature = "sqlite")]
             sdkwork_database_sqlx::DatabasePool::Sqlite(pool, _) => {
                 let start = Instant::now();
                 sqlx::query("SELECT 1")
@@ -91,6 +92,7 @@ impl HealthChecker {
 
         // Get pool metrics
         let (pool_size, idle_connections) = match &self.pool {
+            #[cfg(feature = "sqlite")]
             sdkwork_database_sqlx::DatabasePool::Sqlite(pool, _) => (pool.size(), pool.num_idle()),
             sdkwork_database_sqlx::DatabasePool::Postgres(pool, _) => {
                 (pool.size(), pool.num_idle())
@@ -107,6 +109,7 @@ impl HealthChecker {
         };
 
         let engine = match &self.pool {
+            #[cfg(feature = "sqlite")]
             sdkwork_database_sqlx::DatabasePool::Sqlite(_, _) => "SQLite",
             sdkwork_database_sqlx::DatabasePool::Postgres(_, _) => "PostgreSQL",
         };

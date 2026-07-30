@@ -6,10 +6,23 @@ rust-version.workspace = true
 license.workspace = true
 description = "SDKWork database lifecycle orchestration: migrate, seed, bootstrap"
 
+[features]
+default = ["postgres"]
+postgres = [
+    "sqlx/postgres",
+    "sdkwork-database-sqlx/postgres",
+    "sdkwork-database-history/postgres",
+]
+sqlite = [
+    "sqlx/sqlite",
+    "sdkwork-database-sqlx/sqlite",
+    "sdkwork-database-history/sqlite",
+]
+
 [dependencies]
 sdkwork-database-config = { path = "../sdkwork-database-config" }
-sdkwork-database-history = { path = "../sdkwork-database-history" }
-sdkwork-database-sqlx = { path = "../sdkwork-database-sqlx" }
+sdkwork-database-history = { path = "../sdkwork-database-history", default-features = false }
+sdkwork-database-sqlx = { path = "../sdkwork-database-sqlx", default-features = false }
 sdkwork-database-spi = { path = "../sdkwork-database-spi" }
 
 async-trait.workspace = true
@@ -18,11 +31,11 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-sqlx = { workspace = true, features = ["sqlite", "postgres"] }
+sqlx.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 url.workspace = true
 sdkwork-database-config = { path = "../sdkwork-database-config" }
-sdkwork-database-sqlx = { path = "../sdkwork-database-sqlx" }
+sdkwork-database-sqlx = { path = "../sdkwork-database-sqlx", default-features = false }

@@ -46,7 +46,7 @@ pub fn reject_retired_database_env() -> Result<(), ConfigError> {
                 | "DATABASE_PROVIDER"
                 | "DATABASE_SSLMODE"
                 | "SDKWORK_DATABASE_PROVIDER"
-                | "SDKWORK_DATABASE_SSLMODE"
+                | "SDKWORK_DATABASE_SSLMODE" // sdkwork-retired-database-key-rejection
         );
         if retired_prefixed_key || retired_alias {
             return Err(ConfigError::InvalidEnvValue {
@@ -285,6 +285,13 @@ fn strip_search_path_option(options: &str) -> String {
     retained.join(" ")
 }
 
+fn serialize_postgres_url(mut url: Url) -> String {
+    if let Some(query) = url.query().map(|query| query.replace('+', "%20")) {
+        url.set_query(Some(&query));
+    }
+    url.into()
+}
+
 fn normalize_workspace_postgres_url_with_schema(
     base_url: &str,
     schema_override: Option<&str>,
@@ -324,7 +331,9 @@ fn normalize_workspace_postgres_url_with_schema(
     }
 
     let fallback_public = env_optional("SDKWORK_DATABASE_SCHEMA_FALLBACK_PUBLIC")
-        .is_none_or(|value| !matches!(value.to_ascii_lowercase().as_str(), "0" | "false" | "no"));
+        .map_or(true, |value| {
+            !matches!(value.to_ascii_lowercase().as_str(), "0" | "false" | "no")
+        });
     let search_path = if fallback_public {
         format!("{schema},public")
     } else {
@@ -350,7 +359,7 @@ fn normalize_workspace_postgres_url_with_schema(
         }
         query.append_pair("options", &format!("-c search_path={search_path}"));
     }
-    Ok(url.into())
+    Ok(serialize_postgres_url(url))
 }
 
 /// Validate and pin a PostgreSQL URL to the canonical workspace schema.
@@ -514,6 +523,8 @@ mod tests {
         assert!(options
             .iter()
             .all(|value| !value.contains("search_path=wrong")));
+        assert!(normalized.contains("options=-c%20search_path%3Dsdkwork_ai_dev%2Cpublic"));
+        assert!(!normalized.contains("options=-c+search_path"));
     }
 
     #[test]

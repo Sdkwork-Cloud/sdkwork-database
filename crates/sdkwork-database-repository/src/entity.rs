@@ -41,6 +41,7 @@ pub trait Entity: Send + Sync + Clone + Serialize + for<'de> Deserialize<'de> {
     fn to_json(&self) -> serde_json::Value;
 
     /// Create an instance of this entity from a SQLite row.
+    #[cfg(feature = "sqlite")]
     fn from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Self, sqlx::Error>;
 
     /// Create an instance of this entity from a PostgreSQL row.
@@ -141,6 +142,7 @@ macro_rules! impl_entity {
                 serde_json::to_value(self).unwrap_or_default()
             }
 
+            #[cfg(feature = "sqlite")]
             fn from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Self, sqlx::Error> {
                 use sqlx::Row;
                 Ok(Self {
@@ -205,6 +207,7 @@ macro_rules! impl_entity_with_pk {
                 serde_json::to_value(self).unwrap_or_default()
             }
 
+            #[cfg(feature = "sqlite")]
             fn from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Self, sqlx::Error> {
                 use sqlx::Row;
                 Ok(Self {
@@ -271,6 +274,7 @@ macro_rules! impl_entity_string_pk {
                 serde_json::to_value(self).unwrap_or_default()
             }
 
+            #[cfg(feature = "sqlite")]
             fn from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Self, sqlx::Error> {
                 use sqlx::Row;
                 Ok(Self {

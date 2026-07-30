@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS ops_database_installation_state (
 );
 "#;
 
+#[cfg(feature = "sqlite")]
 pub const HISTORY_TABLES_SQL_SQLITE: &str = r#"
 CREATE TABLE IF NOT EXISTS ops_schema_migration_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -217,6 +218,7 @@ async fn migrate_legacy_installation_state_table(
 ) -> Result<(), HistoryError> {
     let table_name = format!("{prefix}database_installation_state");
     let has_legacy_id = match pool {
+        #[cfg(feature = "sqlite")]
         DatabasePool::Sqlite(sqlite_pool, _) => {
             sqlx::query_scalar::<_, i64>(
                 "SELECT COUNT(*) FROM pragma_table_info($1) WHERE name = 'id'",
@@ -227,6 +229,7 @@ async fn migrate_legacy_installation_state_table(
             .map_err(|error| HistoryError::State(error.to_string()))?
                 > 0
         }
+        #[cfg(feature = "postgres")]
         DatabasePool::Postgres(postgres_pool, _) => {
             sqlx::query_scalar::<_, bool>(
                 "SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = $1 AND column_name = 'id')",
@@ -297,7 +300,8 @@ pub async fn execute_sql_script_atomically(
         return execute_transactional_sql_script(pool, script).await;
     }
 
-    if let DatabasePool::Sqlite(sqlite_pool, _) = pool {
+    #[cfg(feature = "sqlite")]
+    if let Some(sqlite_pool) = pool.as_sqlite() {
         return execute_sqlite_script_atomically(sqlite_pool, script).await;
     }
 
@@ -305,6 +309,7 @@ pub async fn execute_sql_script_atomically(
     execute_transactional_sql_script(pool, &transactional_script).await
 }
 
+#[cfg(feature = "sqlite")]
 async fn execute_sqlite_script_atomically(
     pool: &sqlx::SqlitePool,
     script: &str,
@@ -341,6 +346,7 @@ async fn execute_sqlite_script_atomically(
     Ok(())
 }
 
+#[cfg(feature = "sqlite")]
 async fn execute_sqlite_statement(
     connection: &mut sqlx::SqliteConnection,
     sql: &str,
@@ -392,6 +398,7 @@ async fn execute_transactional_sql_script(
     }
 
     match pool {
+        #[cfg(feature = "sqlite")]
         DatabasePool::Sqlite(sqlite_pool, _) => {
             let mut connection = sqlite_pool.acquire().await.map_err(|error| {
                 HistoryError::Sql(format!(
@@ -413,6 +420,7 @@ async fn execute_transactional_sql_script(
                 )));
             }
         }
+        #[cfg(feature = "postgres")]
         DatabasePool::Postgres(postgres_pool, _) => {
             let mut connection = postgres_pool.acquire().await.map_err(|error| {
                 HistoryError::Sql(format!(
@@ -490,6 +498,7 @@ fn script_has_explicit_transaction(script: &str) -> bool {
 /// (version-controlled migration/seed files). DO NOT pass user input here.
 pub async fn execute_sql(pool: &DatabasePool, sql: &str) -> Result<(), HistoryError> {
     match pool {
+        #[cfg(feature = "sqlite")]
         DatabasePool::Sqlite(sqlite_pool, _) => {
             if execute_sqlite_add_column_if_not_exists(sqlite_pool, sql).await? {
                 return Ok(());
@@ -499,6 +508,7 @@ pub async fn execute_sql(pool: &DatabasePool, sql: &str) -> Result<(), HistoryEr
                 .await
                 .map_err(|e| HistoryError::Sql(format!("sqlite execute failed: {e}")))?;
         }
+        #[cfg(feature = "postgres")]
         DatabasePool::Postgres(pg_pool, _) => {
             sqlx::raw_sql(sql)
                 .execute(pg_pool)
@@ -509,16 +519,19 @@ pub async fn execute_sql(pool: &DatabasePool, sql: &str) -> Result<(), HistoryEr
     Ok(())
 }
 
+#[cfg(feature = "sqlite")]
 struct SqliteAddColumnIfNotExists {
     table_name: String,
     columns: Vec<SqliteAddColumnClause>,
 }
 
+#[cfg(feature = "sqlite")]
 struct SqliteAddColumnClause {
     column_name: String,
     column_definition_tail: String,
 }
 
+#[cfg(feature = "sqlite")]
 async fn execute_sqlite_add_column_if_not_exists(
     pool: &sqlx::SqlitePool,
     sql: &str,
@@ -548,6 +561,7 @@ async fn execute_sqlite_add_column_if_not_exists(
     Ok(true)
 }
 
+#[cfg(feature = "sqlite")]
 async fn sqlite_column_exists(
     pool: &sqlx::SqlitePool,
     table_name: &str,
@@ -567,6 +581,7 @@ async fn sqlite_column_exists(
     Ok(count > 0)
 }
 
+#[cfg(feature = "sqlite")]
 async fn sqlite_column_exists_on_connection(
     connection: &mut sqlx::SqliteConnection,
     table_name: &str,
@@ -586,6 +601,7 @@ async fn sqlite_column_exists_on_connection(
     Ok(count > 0)
 }
 
+#[cfg(feature = "sqlite")]
 fn parse_sqlite_add_column_if_not_exists(sql: &str) -> Option<SqliteAddColumnIfNotExists> {
     let trimmed = strip_leading_sql_comments(sql.trim().trim_end_matches(';').trim());
     let rest = consume_keyword(trimmed, "ALTER")?;
@@ -622,6 +638,7 @@ fn parse_sqlite_add_column_if_not_exists(sql: &str) -> Option<SqliteAddColumnIfN
     })
 }
 
+#[cfg(feature = "sqlite")]
 fn consume_keyword<'a>(input: &'a str, keyword: &str) -> Option<&'a str> {
     let input = input.trim_start();
     let prefix = input.get(..keyword.len())?;
@@ -639,6 +656,7 @@ fn consume_keyword<'a>(input: &'a str, keyword: &str) -> Option<&'a str> {
     Some(remainder)
 }
 
+#[cfg(feature = "sqlite")]
 fn parse_identifier(input: &str) -> Option<(String, &str)> {
     let input = input.trim_start();
     let mut chars = input.char_indices();
@@ -660,6 +678,7 @@ fn parse_identifier(input: &str) -> Option<(String, &str)> {
     }
 }
 
+#[cfg(feature = "sqlite")]
 fn parse_quoted_identifier(input: &str, open: char, close: char) -> Option<(String, &str)> {
     let start_len = open.len_utf8();
     let mut value = String::new();
@@ -682,10 +701,12 @@ fn parse_quoted_identifier(input: &str, open: char, close: char) -> Option<(Stri
     None
 }
 
+#[cfg(feature = "sqlite")]
 fn is_identifier_character(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || matches!(ch, '_' | '$' | '.')
 }
 
+#[cfg(feature = "sqlite")]
 fn strip_leading_sql_comments(mut input: &str) -> &str {
     loop {
         input = input.trim_start();
@@ -707,6 +728,7 @@ fn strip_leading_sql_comments(mut input: &str) -> &str {
     }
 }
 
+#[cfg(feature = "sqlite")]
 fn split_top_level_commas(input: &str) -> Vec<&str> {
     let mut parts = Vec::new();
     let mut start = 0;
@@ -776,10 +798,12 @@ fn split_top_level_commas(input: &str) -> Vec<&str> {
     parts
 }
 
+#[cfg(feature = "sqlite")]
 fn quote_sqlite_identifier(identifier: &str) -> String {
     format!("\"{}\"", identifier.replace('"', "\"\""))
 }
 
+#[cfg(feature = "sqlite")]
 fn quote_sqlite_string_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
@@ -815,6 +839,7 @@ pub async fn migration_checksum(
     let query = "SELECT checksum FROM ops_schema_migration_history \
                   WHERE module_id = $1 AND version = $2 AND engine = $3";
     match pool {
+        #[cfg(feature = "sqlite")]
         DatabasePool::Sqlite(sqlite_pool, _) => {
             let row = sqlx::query(query)
                 .bind(module_id)
@@ -825,6 +850,7 @@ pub async fn migration_checksum(
                 .map_err(|e| HistoryError::Sql(e.to_string()))?;
             Ok(row.map(|r| r.get::<String, _>("checksum")))
         }
+        #[cfg(feature = "postgres")]
         DatabasePool::Postgres(pg_pool, _) => {
             let row = sqlx::query(query)
                 .bind(module_id)
@@ -896,6 +922,7 @@ pub async fn record_migration(
     // duplicate with a changed checksum is an integrity failure that must be
     // surfaced to the lifecycle caller.
     let rows_affected = match pool {
+        #[cfg(feature = "sqlite")]
         DatabasePool::Sqlite(sqlite_pool, _) => sqlx::query(
             "INSERT INTO ops_schema_migration_history \
                  (module_id, version, name, engine, checksum, applied_by, execution_ms) \
@@ -913,6 +940,7 @@ pub async fn record_migration(
         .await
         .map_err(|e| HistoryError::Migration(format!("record_migration: {e}")))?
         .rows_affected(),
+        #[cfg(feature = "postgres")]
         DatabasePool::Postgres(pg_pool, _) => sqlx::query(
             "INSERT INTO ops_schema_migration_history \
                  (module_id, version, name, engine, checksum, applied_by, execution_ms) \
@@ -963,6 +991,7 @@ pub async fn is_seed_applied(
                   WHERE module_id = $1 AND seed_id = $2 AND locale = $3 AND profile = $4 \
                   LIMIT 1";
     match pool {
+        #[cfg(feature = "sqlite")]
         DatabasePool::Sqlite(sqlite_pool, _) => {
             let row = sqlx::query(query)
                 .bind(module_id)
@@ -974,6 +1003,7 @@ pub async fn is_seed_applied(
                 .map_err(|e| HistoryError::Seed(e.to_string()))?;
             Ok(row.is_some())
         }
+        #[cfg(feature = "postgres")]
         DatabasePool::Postgres(pg_pool, _) => {
             let row = sqlx::query(query)
                 .bind(module_id)
@@ -1005,6 +1035,7 @@ pub async fn record_seed(
                       checksum = excluded.checksum, \
                       applied_by = excluded.applied_by";
     match pool {
+        #[cfg(feature = "sqlite")]
         DatabasePool::Sqlite(sqlite_pool, _) => {
             sqlx::query(query)
                 .bind(module_id)
@@ -1017,6 +1048,7 @@ pub async fn record_seed(
                 .await
                 .map_err(|e| HistoryError::Seed(e.to_string()))?;
         }
+        #[cfg(feature = "postgres")]
         DatabasePool::Postgres(pg_pool, _) => {
             sqlx::query(query)
                 .bind(module_id)
@@ -1050,6 +1082,7 @@ pub async fn insert_installation_state_if_absent(
                   VALUES ($1, $2, $3, $4, $5) \
                   ON CONFLICT(module_id) DO NOTHING";
     let rows_affected = match pool {
+        #[cfg(feature = "sqlite")]
         DatabasePool::Sqlite(sqlite_pool, _) => sqlx::query(query)
             .bind(module_id)
             .bind(contract_version)
@@ -1060,6 +1093,7 @@ pub async fn insert_installation_state_if_absent(
             .await
             .map_err(|error| HistoryError::State(error.to_string()))?
             .rows_affected(),
+        #[cfg(feature = "postgres")]
         DatabasePool::Postgres(postgres_pool, _) => sqlx::query(query)
             .bind(module_id)
             .bind(contract_version)
@@ -1092,6 +1126,7 @@ pub async fn upsert_installation_state(
                       seed_profile = excluded.seed_profile, \
                       status = excluded.status";
     match pool {
+        #[cfg(feature = "sqlite")]
         DatabasePool::Sqlite(sqlite_pool, _) => {
             sqlx::query(query)
                 .bind(module_id)
@@ -1103,6 +1138,7 @@ pub async fn upsert_installation_state(
                 .await
                 .map_err(|e| HistoryError::State(e.to_string()))?;
         }
+        #[cfg(feature = "postgres")]
         DatabasePool::Postgres(pg_pool, _) => {
             sqlx::query(query)
                 .bind(module_id)
@@ -1137,6 +1173,7 @@ pub async fn fetch_installation_state(
                   FROM ops_database_installation_state \
                   WHERE module_id = $1 LIMIT 1";
     match pool {
+        #[cfg(feature = "sqlite")]
         DatabasePool::Sqlite(sqlite_pool, _) => {
             let row = sqlx::query(query)
                 .bind(module_id)
@@ -1151,6 +1188,7 @@ pub async fn fetch_installation_state(
                 status: r.get("status"),
             }))
         }
+        #[cfg(feature = "postgres")]
         DatabasePool::Postgres(pg_pool, _) => {
             let row = sqlx::query(query)
                 .bind(module_id)
@@ -1187,6 +1225,7 @@ pub async fn list_applied_seeds(
                   WHERE module_id = $1 \
                   ORDER BY seed_id, locale, profile";
     match pool {
+        #[cfg(feature = "sqlite")]
         DatabasePool::Sqlite(sqlite_pool, _) => {
             let rows = sqlx::query(query)
                 .bind(module_id)
@@ -1203,6 +1242,7 @@ pub async fn list_applied_seeds(
                 })
                 .collect())
         }
+        #[cfg(feature = "postgres")]
         DatabasePool::Postgres(pg_pool, _) => {
             let rows = sqlx::query(query)
                 .bind(module_id)
@@ -1238,6 +1278,7 @@ async fn fetch_version_column(
     engine_name: &str,
 ) -> Result<Vec<String>, HistoryError> {
     match pool {
+        #[cfg(feature = "sqlite")]
         DatabasePool::Sqlite(sqlite_pool, _) => {
             let rows = sqlx::query(query)
                 .bind(module_id)
@@ -1247,6 +1288,7 @@ async fn fetch_version_column(
                 .map_err(|e| HistoryError::Sql(e.to_string()))?;
             Ok(rows.iter().map(|r| r.get::<String, _>("version")).collect())
         }
+        #[cfg(feature = "postgres")]
         DatabasePool::Postgres(pg_pool, _) => {
             let rows = sqlx::query(query)
                 .bind(module_id)
@@ -1516,6 +1558,7 @@ mod tests {
         assert!(stmts[1].contains("中文注释"));
     }
 
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn executes_sql_script_with_utf8_string_literals() {
         let config = sdkwork_database_config::DatabaseConfig {
@@ -1581,6 +1624,7 @@ SELECT 1;
         ));
     }
 
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn executes_explicit_transaction_script_as_one_raw_batch() {
         let config = sdkwork_database_config::DatabaseConfig {
@@ -1608,6 +1652,7 @@ SELECT 1;
         assert_eq!(count, 1);
     }
 
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn executes_sqlite_compatibility_prelude_before_transaction_batch() {
         let config = sdkwork_database_config::DatabaseConfig {
@@ -1646,6 +1691,7 @@ PRAGMA foreign_keys = ON;
         assert_eq!(snapshot, "original");
     }
 
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn failed_sqlite_transaction_is_rolled_back_before_pool_reuse() {
         let config = sdkwork_database_config::DatabaseConfig {
@@ -1735,6 +1781,7 @@ SELECT 1;
         assert_eq!(stmts[1], "SELECT 1;");
     }
 
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn creates_default_history_tables_on_sqlite() {
         let config = sdkwork_database_config::DatabaseConfig {
@@ -1768,6 +1815,7 @@ SELECT 1;
         }
     }
 
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn record_migration_rejects_conflicting_checksum_instead_of_ignoring_it() {
         let config = sdkwork_database_config::DatabaseConfig {
@@ -1823,6 +1871,7 @@ SELECT 1;
         assert!(error.to_string().contains("checksum_mismatch"));
     }
 
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn sqlite_execute_sql_script_supports_add_column_if_not_exists() {
         let config = sdkwork_database_config::DatabaseConfig {
@@ -1856,6 +1905,7 @@ SELECT 1;
         assert_eq!(present, 1);
     }
 
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn sqlite_execute_sql_script_supports_multi_add_column_if_not_exists() {
         let config = sdkwork_database_config::DatabaseConfig {
@@ -1890,6 +1940,7 @@ SELECT 1;
         assert_eq!(present, 2);
     }
 
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn sqlite_atomic_sql_script_supports_add_column_if_not_exists() {
         let config = sdkwork_database_config::DatabaseConfig {
@@ -1923,6 +1974,7 @@ SELECT 1;
         assert_eq!(present, 1);
     }
 
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn installation_state_tracks_each_module_independently() {
         let config = sdkwork_database_config::DatabaseConfig {
@@ -1964,6 +2016,7 @@ SELECT 1;
         assert_eq!(row_count, 2);
     }
 
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn initial_installation_state_insert_preserves_existing_phase_state() {
         let config = sdkwork_database_config::DatabaseConfig {
@@ -2013,6 +2066,7 @@ SELECT 1;
         assert_eq!(state.status, "seeded");
     }
 
+    #[cfg(feature = "sqlite")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn concurrent_initial_installation_state_insert_has_one_creator() {
         let temp = tempfile::tempdir().expect("temporary SQLite database");
@@ -2060,6 +2114,7 @@ SELECT 1;
         assert_eq!(row_count, 1);
     }
 
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn ensure_history_tables_migrates_legacy_singleton_installation_state() {
         let config = sdkwork_database_config::DatabaseConfig {

@@ -1,7 +1,8 @@
 //! Sqlx-based connection pool implementation for SDKWork.
 //!
 //! This crate provides a unified interface for creating and managing database
-//! connection pools using sqlx. It supports both SQLite and PostgreSQL.
+//! connection pools using sqlx. PostgreSQL is the default server driver;
+//! client-local SQLite and compatibility AnyPool support are explicit features.
 //!
 //! # Quick Start
 //!
@@ -37,22 +38,27 @@
 //! }
 //! ```
 
+#[cfg(feature = "any")]
 pub mod any;
 pub mod builder;
 pub mod error;
 pub mod pool;
+#[cfg(feature = "postgres")]
 pub mod postgres;
 mod process_shared;
+#[cfg(feature = "sqlite")]
 pub mod sqlite;
+#[cfg(feature = "sqlite")]
 pub mod sqlite_decimal;
 
 // Re-export main types at crate root
 pub use builder::PoolBuilder;
 pub use error::PoolError;
+#[cfg(feature = "any")]
+pub use pool::{create_any_pool_from_config, create_any_pool_from_env};
 pub use pool::{
-    create_any_pool_from_config, create_any_pool_from_env, create_pool_from_config,
-    create_pool_from_env, create_pool_from_toml, DatabasePool, PoolContext, PoolHealth,
-    PoolHealthStatus, PostgresSchemaIdentity,
+    create_pool_from_config, create_pool_from_env, create_pool_from_toml, DatabasePool,
+    PoolContext, PoolHealth, PoolHealthStatus, PostgresSchemaIdentity,
 };
 pub use process_shared::{
     enable_process_shared_database_pool, process_shared_database_pool,

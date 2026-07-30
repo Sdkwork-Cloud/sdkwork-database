@@ -44,6 +44,7 @@ pub struct ConstraintInfo {
     pub references_columns: Vec<String>,
 }
 
+#[cfg(feature = "sqlite")]
 async fn sqlite_user_tables(pool: &sqlx::SqlitePool) -> Result<Vec<String>, DriftError> {
     sqlx::query_scalar::<_, String>(
         "SELECT name FROM sqlite_master \
@@ -76,6 +77,7 @@ pub async fn introspect_table_column_details(
     pool: &DatabasePool,
 ) -> Result<BTreeMap<String, Vec<ColumnInfo>>, DriftError> {
     match pool {
+        #[cfg(feature = "sqlite")]
         DatabasePool::Sqlite(sqlite_pool, _) => {
             let tables = sqlite_user_tables(sqlite_pool).await?;
 
@@ -174,6 +176,7 @@ pub async fn introspect_table_index_details(
     pool: &DatabasePool,
 ) -> Result<BTreeMap<String, Vec<IndexInfo>>, DriftError> {
     match pool {
+        #[cfg(feature = "sqlite")]
         DatabasePool::Sqlite(sqlite_pool, _) => {
             let tables = sqlite_user_tables(sqlite_pool).await?;
 
@@ -279,6 +282,7 @@ pub async fn introspect_table_index_details(
     }
 }
 
+#[cfg(feature = "sqlite")]
 fn extract_sqlite_index_predicate(create_sql: &str) -> Option<String> {
     let bytes = create_sql.as_bytes();
     let mut index = 0;
@@ -349,6 +353,7 @@ pub async fn introspect_table_constraint_details(
     pool: &DatabasePool,
 ) -> Result<BTreeMap<String, Vec<ConstraintInfo>>, DriftError> {
     match pool {
+        #[cfg(feature = "sqlite")]
         DatabasePool::Sqlite(sqlite_pool, _) => {
             let tables = sqlite_user_tables(sqlite_pool).await?;
             let indexes = introspect_table_index_details(pool).await?;
@@ -484,6 +489,7 @@ fn normalize_constraint_type(constraint_type: &str) -> String {
 /// Introspect all user tables from the live database (names only).
 pub async fn introspect_tables(pool: &DatabasePool) -> Result<Vec<String>, DriftError> {
     match pool {
+        #[cfg(feature = "sqlite")]
         DatabasePool::Sqlite(sqlite_pool, _) => sqlite_user_tables(sqlite_pool).await,
         DatabasePool::Postgres(pg_pool, _) => {
             let schema = postgres_application_schema(pool).await?;
@@ -521,6 +527,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "sqlite")]
     fn sqlite_partial_index_predicate_ignores_where_inside_expressions() {
         let sql = "CREATE INDEX idx_probe ON probe(lower('where value'), id) \
                    WHERE deleted_at IS NULL;";

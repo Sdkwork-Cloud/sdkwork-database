@@ -460,6 +460,7 @@ impl LifecycleOrchestrator {
                     })?;
                 Ok(present)
             }
+            #[cfg(feature = "sqlite")]
             DatabasePool::Sqlite(pool, _) => {
                 let present = sqlx::query_scalar::<_, i64>(
                     "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = $1",

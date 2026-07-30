@@ -1,7 +1,11 @@
+#![cfg(feature = "sqlite")]
+
 use sdkwork_database_config::{DatabaseConfig, DatabaseEngine};
+#[cfg(feature = "any")]
+use sdkwork_database_sqlx::create_any_pool_from_config;
 use sdkwork_database_sqlx::{
-    create_any_pool_from_config, create_pool_from_config, enable_process_shared_database_pool,
-    process_shared_database_pool, PoolError,
+    create_pool_from_config, enable_process_shared_database_pool, process_shared_database_pool,
+    PoolError,
 };
 
 fn sqlite_config(url: &str) -> DatabaseConfig {
@@ -16,6 +20,7 @@ fn sqlite_config(url: &str) -> DatabaseConfig {
 
 #[tokio::test]
 async fn strict_process_pool_reuses_matching_identity_and_rejects_mismatches() {
+    #[cfg(feature = "any")]
     std::env::set_var("SDKWORK_DATABASE_TEMPORARY_ANY_POOL_EXCEPTION", "true");
     enable_process_shared_database_pool();
 
@@ -27,7 +32,10 @@ async fn strict_process_pool_reuses_matching_identity_and_rejects_mismatches() {
     let second = second.expect("concurrent matching pool");
 
     assert!(process_shared_database_pool().is_some());
+    #[cfg(feature = "any")]
     assert_eq!(first.config().max_connections, 1);
+    #[cfg(not(feature = "any"))]
+    assert_eq!(first.config().max_connections, 2);
     first.close().await;
     assert!(second.as_sqlite().expect("sqlite pool").is_closed());
 
@@ -39,14 +47,17 @@ async fn strict_process_pool_reuses_matching_identity_and_rejects_mismatches() {
         PoolError::ProcessPoolIdentityMismatch { .. }
     ));
 
-    let temporary = create_any_pool_from_config(sqlite_config("sqlite::memory:"))
-        .await
-        .expect("declared temporary AnyPool exception");
-    assert_eq!(temporary.options().get_max_connections(), 1);
-    let temporary_clone = create_any_pool_from_config(sqlite_config("sqlite::memory:"))
-        .await
-        .expect("temporary AnyPool must be reused");
-    temporary.close().await;
-    assert!(temporary_clone.is_closed());
-    std::env::remove_var("SDKWORK_DATABASE_TEMPORARY_ANY_POOL_EXCEPTION");
+    #[cfg(feature = "any")]
+    {
+        let temporary = create_any_pool_from_config(sqlite_config("sqlite::memory:"))
+            .await
+            .expect("declared temporary AnyPool exception");
+        assert_eq!(temporary.options().get_max_connections(), 1);
+        let temporary_clone = create_any_pool_from_config(sqlite_config("sqlite::memory:"))
+            .await
+            .expect("temporary AnyPool must be reused");
+        temporary.close().await;
+        assert!(temporary_clone.is_closed());
+        std::env::remove_var("SDKWORK_DATABASE_TEMPORARY_ANY_POOL_EXCEPTION");
+    }
 }

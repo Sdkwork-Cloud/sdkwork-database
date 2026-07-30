@@ -4,7 +4,9 @@ use sdkwork_database_config::{DatabaseConfig, DatabaseEngine, DeploymentMode};
 
 use crate::error::PoolError;
 use crate::pool::DatabasePool;
+#[cfg(feature = "postgres")]
 use crate::postgres::create_postgres_pool;
+#[cfg(feature = "sqlite")]
 use crate::sqlite::create_sqlite_pool;
 
 /// Builder for creating database connection pools.
@@ -135,12 +137,32 @@ impl PoolBuilder {
 
         match config.engine {
             DatabaseEngine::Sqlite => {
-                let (pool, ctx) = create_sqlite_pool(&config).await?;
-                Ok(DatabasePool::Sqlite(pool, ctx))
+                #[cfg(feature = "sqlite")]
+                {
+                    let (pool, ctx) = create_sqlite_pool(&config).await?;
+                    Ok(DatabasePool::Sqlite(pool, ctx))
+                }
+                #[cfg(not(feature = "sqlite"))]
+                {
+                    Err(PoolError::DatabaseConfig(
+                        "SQLite support requires the sdkwork-database-sqlx sqlite feature"
+                            .to_string(),
+                    ))
+                }
             }
             DatabaseEngine::Postgres => {
-                let (pool, ctx) = create_postgres_pool(&config).await?;
-                Ok(DatabasePool::Postgres(pool, ctx))
+                #[cfg(feature = "postgres")]
+                {
+                    let (pool, ctx) = create_postgres_pool(&config).await?;
+                    Ok(DatabasePool::Postgres(pool, ctx))
+                }
+                #[cfg(not(feature = "postgres"))]
+                {
+                    Err(PoolError::DatabaseConfig(
+                        "PostgreSQL support requires the sdkwork-database-sqlx postgres feature"
+                            .to_string(),
+                    ))
+                }
             }
         }
     }
@@ -149,8 +171,11 @@ impl PoolBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sdkwork_database_config::{DatabaseEngine, DeploymentMode};
+    use sdkwork_database_config::DatabaseEngine;
+    #[cfg(feature = "sqlite")]
+    use sdkwork_database_config::DeploymentMode;
 
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn test_build_sqlite_pool() {
         let config = DatabaseConfig {
@@ -168,6 +193,7 @@ mod tests {
         pool.close().await;
     }
 
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn test_build_sqlite_pool_integrated() {
         let config = DatabaseConfig {
@@ -186,10 +212,11 @@ mod tests {
         pool.close().await;
     }
 
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn test_builder_chaining() {
         let config = DatabaseConfig {
-            engine: DatabaseEngine::Sqlite,
+            engine: DatabaseEngine::Postgres,
             url: "sqlite::memory:".to_string(),
             ..Default::default()
         };
