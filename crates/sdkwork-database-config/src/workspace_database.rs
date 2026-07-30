@@ -332,12 +332,8 @@ fn normalize_workspace_postgres_url_with_schema(
 
     let fallback_public = match env_optional("SDKWORK_DATABASE_SCHEMA_FALLBACK_PUBLIC") {
         None => false,
-        Some(value) if matches!(value.to_ascii_lowercase().as_str(), "0" | "false" | "no") => {
-            false
-        }
-        Some(value) if matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes") => {
-            true
-        }
+        Some(value) if matches!(value.to_ascii_lowercase().as_str(), "0" | "false" | "no") => false,
+        Some(value) if matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes") => true,
         Some(value) => {
             return Err(ConfigError::InvalidConfig(format!(
                 "SDKWORK_DATABASE_SCHEMA_FALLBACK_PUBLIC must be true or false, got {value:?}"
@@ -542,10 +538,8 @@ mod tests {
     #[serial]
     fn explicit_public_fallback_is_opt_in() {
         let _cleared = canonical_keys_cleared();
-        let _configured = EnvGuard::set(&[(
-            "SDKWORK_DATABASE_SCHEMA_FALLBACK_PUBLIC",
-            Some("true"),
-        )]);
+        let _configured =
+            EnvGuard::set(&[("SDKWORK_DATABASE_SCHEMA_FALLBACK_PUBLIC", Some("true"))]);
         let normalized = normalize_workspace_postgres_url(
             "postgresql://sdkwork_ai_dev:secret@localhost/sdkwork_ai_dev",
         )
@@ -557,10 +551,8 @@ mod tests {
     #[serial]
     fn invalid_public_fallback_value_fails_closed() {
         let _cleared = canonical_keys_cleared();
-        let _configured = EnvGuard::set(&[(
-            "SDKWORK_DATABASE_SCHEMA_FALLBACK_PUBLIC",
-            Some("sometimes"),
-        )]);
+        let _configured =
+            EnvGuard::set(&[("SDKWORK_DATABASE_SCHEMA_FALLBACK_PUBLIC", Some("sometimes"))]);
         let error = normalize_workspace_postgres_url(
             "postgresql://sdkwork_ai_dev:secret@localhost/sdkwork_ai_dev",
         )
