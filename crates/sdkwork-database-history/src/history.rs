@@ -239,6 +239,8 @@ async fn migrate_legacy_installation_state_table(
             .await
             .map_err(|error| HistoryError::State(error.to_string()))?
         }
+        #[allow(unreachable_patterns)]
+        _ => return Err(unsupported_pool_engine(pool)),
     };
 
     if !has_legacy_id {
@@ -443,6 +445,8 @@ async fn execute_transactional_sql_script(
                 )));
             }
         }
+        #[allow(unreachable_patterns)]
+        _ => return Err(unsupported_pool_engine(pool)),
     }
     Ok(())
 }
@@ -515,6 +519,8 @@ pub async fn execute_sql(pool: &DatabasePool, sql: &str) -> Result<(), HistoryEr
                 .await
                 .map_err(|e| HistoryError::Sql(format!("postgres execute failed: {e}")))?;
         }
+        #[allow(unreachable_patterns)]
+        _ => return Err(unsupported_pool_engine(pool)),
     }
     Ok(())
 }
@@ -861,6 +867,8 @@ pub async fn migration_checksum(
                 .map_err(|e| HistoryError::Sql(e.to_string()))?;
             Ok(row.map(|r| r.get::<String, _>("checksum")))
         }
+        #[allow(unreachable_patterns)]
+        _ => Err(unsupported_pool_engine(pool)),
     }
 }
 
@@ -958,6 +966,8 @@ pub async fn record_migration(
         .await
         .map_err(|e| HistoryError::Migration(format!("record_migration: {e}")))?
         .rows_affected(),
+        #[allow(unreachable_patterns)]
+        _ => return Err(unsupported_pool_engine(pool)),
     };
 
     if rows_affected == 0 {
@@ -1015,6 +1025,8 @@ pub async fn is_seed_applied(
                 .map_err(|e| HistoryError::Seed(e.to_string()))?;
             Ok(row.is_some())
         }
+        #[allow(unreachable_patterns)]
+        _ => Err(unsupported_pool_engine(pool)),
     }
 }
 
@@ -1061,6 +1073,8 @@ pub async fn record_seed(
                 .await
                 .map_err(|e| HistoryError::Seed(e.to_string()))?;
         }
+        #[allow(unreachable_patterns)]
+        _ => return Err(unsupported_pool_engine(pool)),
     }
     Ok(())
 }
@@ -1104,6 +1118,8 @@ pub async fn insert_installation_state_if_absent(
             .await
             .map_err(|error| HistoryError::State(error.to_string()))?
             .rows_affected(),
+        #[allow(unreachable_patterns)]
+        _ => return Err(unsupported_pool_engine(pool)),
     };
     Ok(rows_affected == 1)
 }
@@ -1150,6 +1166,8 @@ pub async fn upsert_installation_state(
                 .await
                 .map_err(|e| HistoryError::State(e.to_string()))?;
         }
+        #[allow(unreachable_patterns)]
+        _ => return Err(unsupported_pool_engine(pool)),
     }
     Ok(())
 }
@@ -1203,6 +1221,8 @@ pub async fn fetch_installation_state(
                 status: r.get("status"),
             }))
         }
+        #[allow(unreachable_patterns)]
+        _ => Err(unsupported_pool_engine(pool)),
     }
 }
 
@@ -1259,6 +1279,8 @@ pub async fn list_applied_seeds(
                 })
                 .collect())
         }
+        #[allow(unreachable_patterns)]
+        _ => Err(unsupported_pool_engine(pool)),
     }
 }
 
@@ -1298,7 +1320,16 @@ async fn fetch_version_column(
                 .map_err(|e| HistoryError::Sql(e.to_string()))?;
             Ok(rows.iter().map(|r| r.get::<String, _>("version")).collect())
         }
+        #[allow(unreachable_patterns)]
+        _ => Err(unsupported_pool_engine(pool)),
     }
+}
+
+fn unsupported_pool_engine(pool: &DatabasePool) -> HistoryError {
+    HistoryError::Sql(format!(
+        "database history support for engine '{}' is not enabled",
+        pool.engine()
+    ))
 }
 
 // ── SQL Statement Splitter ──────────────────────────────────────────────────
