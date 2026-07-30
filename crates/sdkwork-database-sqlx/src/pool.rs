@@ -330,8 +330,8 @@ impl PoolHealth {
 ///
 /// # Environment Variables
 ///
-/// - `SDKWORK_{SERVICE}_DATABASE_URL` - database connection URL
-/// - `SDKWORK_{SERVICE}_DATABASE_MAX_CONNECTIONS` - max connections
+/// - `SDKWORK_DATABASE_URL` - explicit workspace database URL override
+/// - `SDKWORK_DATABASE_MAX_CONNECTIONS` - process pool connection budget
 /// - etc.
 ///
 /// # Example
@@ -385,12 +385,17 @@ pub async fn create_any_pool_from_env(service_name: &str) -> Result<Option<AnyPo
 fn normalize_config_engine(mut config: DatabaseConfig) -> Result<DatabaseConfig, PoolError> {
     if config.url.is_empty() {
         return Err(PoolError::InvalidUrl(
-            "Database URL is empty. Set SDKWORK_*_DATABASE_URL environment variable.".to_string(),
+            "Database URL is empty. Set SDKWORK_DATABASE_* environment fields.".to_string(),
         ));
     }
 
     if let Some(engine) = DatabaseEngine::from_url(&config.url) {
         config.engine = engine;
+    }
+    if config.engine == DatabaseEngine::Postgres {
+        config.url = sdkwork_database_config::workspace_database::normalize_workspace_postgres_url(
+            &config.url,
+        )?;
     }
 
     Ok(config)

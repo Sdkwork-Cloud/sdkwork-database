@@ -4,86 +4,53 @@ use crate::database::{DatabaseConfig, DatabaseEngine, DeploymentMode};
 use crate::error::ConfigError;
 use crate::postgres::{PgSslMode, PostgresConfig};
 use crate::sqlite::SqliteConfig;
+use crate::workspace_database::{
+    normalize_workspace_postgres_url, reject_retired_database_env, resolve_workspace_database_url,
+};
 
-/// Load database configuration from environment variables.
+/// Load one module's database configuration from the workspace-scoped environment.
 ///
-/// Environment variable naming convention:
-/// - `SDKWORK_{SERVICE}_DATABASE_URL` - database connection URL
-/// - `SDKWORK_{SERVICE}_DATABASE_ENGINE` - database engine (sqlite/postgres)
-/// - `SDKWORK_{SERVICE}_DATABASE_MODE` - deployment mode (standalone/integrated)
-/// - `SDKWORK_{SERVICE}_DATABASE_TABLE_PREFIX` - table prefix for integrated mode
-/// - `SDKWORK_{SERVICE}_DATABASE_MAX_CONNECTIONS` - max connections
-/// - `SDKWORK_{SERVICE}_DATABASE_MIN_CONNECTIONS` - min connections
-/// - `SDKWORK_{SERVICE}_DATABASE_ACQUIRE_TIMEOUT` - acquire timeout (seconds)
-/// - `SDKWORK_{SERVICE}_DATABASE_IDLE_TIMEOUT` - idle timeout (seconds)
-/// - `SDKWORK_{SERVICE}_DATABASE_MAX_LIFETIME` - max lifetime (seconds)
-///
-/// Falls back to the unified sdkwork-clawrouter database profile:
-/// - `SDKWORK_DATABASE_URL`
-/// - `DATABASE_URL` (legacy)
-/// - `SDKWORK_CLAW_DATABASE_URL`
-/// - `SDKWORK_CLAW_DATABASE_ENGINE/HOST/PORT/NAME/USERNAME/PASSWORD/SSL_MODE`
-/// - default local PostgreSQL development database (`sdkwork_ai_dev` on `127.0.0.1:5432`)
+/// `service_name` identifies table ownership only. Connection identity, schema,
+/// pool sizing, and runtime policy always use `SDKWORK_DATABASE_*`.
 pub fn load_from_env(service_name: &str) -> Result<DatabaseConfig, ConfigError> {
-    let prefix = format!("SDKWORK_{}", service_name.to_uppercase());
-
-    let url = crate::claw_database::resolve_unified_database_url(&prefix)?;
-
-    // Detect or load engine
-    let engine = get_env_optional(&format!("{prefix}_DATABASE_ENGINE"))
-        .or_else(|| get_env_optional("SDKWORK_CLAW_DATABASE_ENGINE"))
-        .and_then(|v| match v.to_lowercase().as_str() {
-            "sqlite" => Some(DatabaseEngine::Sqlite),
-            "postgres" | "postgresql" => Some(DatabaseEngine::Postgres),
-            _ => None,
-        })
-        .or_else(|| DatabaseEngine::from_url(&url))
-        .ok_or_else(|| ConfigError::InvalidUrl(format!("Cannot detect engine from URL: {url}")))?;
-
-    let url = if engine == DatabaseEngine::Postgres {
-        crate::claw_database::postgres_url_with_search_path(&url, &prefix)
-    } else {
-        url
+    reject_retired_database_env()?;
+    let raw_url = resolve_workspace_database_url()?;
+    let detected_engine = DatabaseEngine::from_url(&raw_url).ok_or_else(|| {
+        ConfigError::InvalidUrl(format!("cannot detect database engine from URL: {raw_url}"))
+    })?;
+    let engine = match get_env_optional("SDKWORK_DATABASE_ENGINE") {
+        Some(value) => {
+            let configured = parse_database_engine(&value)?;
+            if configured != detected_engine {
+                return Err(ConfigError::InvalidConfig(format!(
+                    "SDKWORK_DATABASE_ENGINE={value:?} conflicts with database URL engine {detected_engine}"
+                )));
+            }
+            configured
+        }
+        None => detected_engine,
     };
 
-    // Load deployment mode
-    let mode = get_env_optional(&format!("{prefix}_DATABASE_MODE"))
-        .and_then(|v| match v.to_lowercase().as_str() {
-            "standalone" => Some(DeploymentMode::Standalone),
-            "integrated" => Some(DeploymentMode::Integrated),
-            _ => None,
-        })
-        .unwrap_or_default();
-
-    // Load table prefix
-    let table_prefix = get_env_optional(&format!("{prefix}_DATABASE_TABLE_PREFIX")).unwrap_or_else(
-        || match mode {
-            DeploymentMode::Standalone => String::new(),
-            DeploymentMode::Integrated => format!("{}_", service_name.to_lowercase()),
-        },
-    );
-
-    let max_connections = match get_env_optional(&format!("{prefix}_DATABASE_MAX_CONNECTIONS"))
-        .or_else(|| get_env_optional("SDKWORK_CLAW_DATABASE_MAX_CONNECTIONS"))
-    {
-        Some(value) => value
-            .parse::<u32>()
-            .map_err(|_| ConfigError::InvalidEnvValue {
-                key: format!("{prefix}_DATABASE_MAX_CONNECTIONS"),
-                message: format!("Cannot parse '{value}' as u32"),
-            })?,
-        None => crate::claw_database::resolve_unified_max_connections(&prefix),
+    let url = match engine {
+        DatabaseEngine::Postgres => normalize_workspace_postgres_url(&raw_url)?,
+        DatabaseEngine::Sqlite => raw_url,
     };
-    let min_connections = get_env_as::<u32>(&format!("{}_DATABASE_MIN_CONNECTIONS", prefix), 1)?;
-    let acquire_timeout_secs =
-        get_env_as::<u64>(&format!("{}_DATABASE_ACQUIRE_TIMEOUT", prefix), 10)?;
-    let idle_timeout_secs = get_env_as::<u64>(&format!("{}_DATABASE_IDLE_TIMEOUT", prefix), 300)?;
-    let max_lifetime_secs = get_env_as::<u64>(&format!("{}_DATABASE_MAX_LIFETIME", prefix), 1800)?;
-
-    let postgres = PostgresConfig {
-        ssl_mode: resolve_postgres_ssl_mode(&prefix, &url),
-        ..Default::default()
+    let mode = match engine {
+        DatabaseEngine::Postgres => DeploymentMode::Integrated,
+        DatabaseEngine::Sqlite => DeploymentMode::Standalone,
     };
+    let table_prefix = match mode {
+        DeploymentMode::Integrated => format!("{}_", service_name.to_ascii_lowercase()),
+        DeploymentMode::Standalone => String::new(),
+    };
+    let max_connections = get_env_as("SDKWORK_DATABASE_MAX_CONNECTIONS", 10_u32)?;
+    let min_connections = get_env_as("SDKWORK_DATABASE_MIN_CONNECTIONS", 1_u32)?;
+    if min_connections > max_connections {
+        return Err(ConfigError::InvalidConfig(format!(
+            "SDKWORK_DATABASE_MIN_CONNECTIONS ({min_connections}) exceeds SDKWORK_DATABASE_MAX_CONNECTIONS ({max_connections})"
+        )));
+    }
+    let postgres_ssl_mode = resolve_postgres_ssl_mode(&url);
 
     Ok(DatabaseConfig {
         engine,
@@ -92,27 +59,33 @@ pub fn load_from_env(service_name: &str) -> Result<DatabaseConfig, ConfigError> 
         table_prefix,
         max_connections,
         min_connections,
-        acquire_timeout_secs,
-        idle_timeout_secs,
-        max_lifetime_secs,
+        acquire_timeout_secs: get_env_as("SDKWORK_DATABASE_ACQUIRE_TIMEOUT", 10_u64)?,
+        idle_timeout_secs: get_env_as("SDKWORK_DATABASE_IDLE_TIMEOUT", 300_u64)?,
+        max_lifetime_secs: get_env_as("SDKWORK_DATABASE_MAX_LIFETIME", 1800_u64)?,
         sqlite: SqliteConfig::default(),
-        postgres,
+        postgres: PostgresConfig {
+            ssl_mode: postgres_ssl_mode,
+            ..Default::default()
+        },
     })
 }
 
-fn resolve_postgres_ssl_mode(service_prefix: &str, url: &str) -> PgSslMode {
-    for key in [
-        format!("{service_prefix}_DATABASE_SSL_MODE"),
-        "SDKWORK_CLAW_DATABASE_SSL_MODE".to_string(),
-    ] {
-        if let Some(value) = get_env_optional(&key) {
-            return parse_pg_ssl_mode(&value);
-        }
+fn parse_database_engine(value: &str) -> Result<DatabaseEngine, ConfigError> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "sqlite" => Ok(DatabaseEngine::Sqlite),
+        "postgres" | "postgresql" => Ok(DatabaseEngine::Postgres),
+        _ => Err(ConfigError::InvalidEnvValue {
+            key: "SDKWORK_DATABASE_ENGINE".to_string(),
+            message: format!("unsupported database engine: {value}"),
+        }),
     }
-    if let Some(mode) = parse_pg_ssl_mode_from_url(url) {
-        return mode;
-    }
-    PgSslMode::Prefer
+}
+
+fn resolve_postgres_ssl_mode(url: &str) -> PgSslMode {
+    get_env_optional("SDKWORK_DATABASE_SSL_MODE")
+        .map(|value| parse_pg_ssl_mode(&value))
+        .or_else(|| parse_pg_ssl_mode_from_url(url))
+        .unwrap_or(PgSslMode::Prefer)
 }
 
 fn parse_pg_ssl_mode(value: &str) -> PgSslMode {
@@ -128,18 +101,20 @@ fn parse_pg_ssl_mode(value: &str) -> PgSslMode {
 }
 
 fn parse_pg_ssl_mode_from_url(url: &str) -> Option<PgSslMode> {
-    let query = url.split('?').nth(1)?;
-    for pair in query.split('&') {
-        let (key, value) = pair.split_once('=')?;
-        if key.eq_ignore_ascii_case("sslmode") {
-            return Some(parse_pg_ssl_mode(value));
-        }
-    }
-    None
+    url::Url::parse(url)
+        .ok()?
+        .query_pairs()
+        .find_map(|(key, value)| {
+            key.eq_ignore_ascii_case("sslmode")
+                .then(|| parse_pg_ssl_mode(&value))
+        })
 }
 
 fn get_env_optional(key: &str) -> Option<String> {
-    env::var(key).ok().filter(|v| !v.is_empty())
+    env::var(key)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn get_env_as<T: std::str::FromStr>(key: &str, default: T) -> Result<T, ConfigError> {
@@ -148,7 +123,7 @@ fn get_env_as<T: std::str::FromStr>(key: &str, default: T) -> Result<T, ConfigEr
             .parse::<T>()
             .map_err(|_| ConfigError::InvalidEnvValue {
                 key: key.to_string(),
-                message: format!("Cannot parse '{}' as {}", value, std::any::type_name::<T>()),
+                message: format!("cannot parse {value:?} as {}", std::any::type_name::<T>()),
             }),
         None => Ok(default),
     }
@@ -158,31 +133,28 @@ fn get_env_as<T: std::str::FromStr>(key: &str, default: T) -> Result<T, ConfigEr
 mod tests {
     use super::*;
     use serial_test::serial;
-    use std::env;
 
-    struct EnvGuard {
-        previous: Vec<(String, Option<String>)>,
-    }
+    struct EnvGuard(Vec<(String, Option<String>)>);
 
     impl EnvGuard {
         fn set(values: &[(&str, Option<&str>)]) -> Self {
             let previous = values
                 .iter()
                 .map(|(key, _)| ((*key).to_string(), env::var(*key).ok()))
-                .collect::<Vec<_>>();
+                .collect();
             for (key, value) in values {
                 match value {
                     Some(value) => env::set_var(key, value),
                     None => env::remove_var(key),
                 }
             }
-            Self { previous }
+            Self(previous)
         }
     }
 
     impl Drop for EnvGuard {
         fn drop(&mut self) {
-            for (key, value) in &self.previous {
+            for (key, value) in &self.0 {
                 match value {
                     Some(value) => env::set_var(key, value),
                     None => env::remove_var(key),
@@ -191,105 +163,99 @@ mod tests {
         }
     }
 
-    #[test]
-    #[serial]
-    fn test_load_from_env_uses_claw_router_default_when_unset() {
-        let _guard = EnvGuard::set(&[
-            ("SDKWORK_MISSING_TEST_DATABASE_URL", None),
+    fn clear_database_env() -> EnvGuard {
+        EnvGuard::set(&[
             ("SDKWORK_DATABASE_URL", None),
+            ("SDKWORK_DATABASE_ENGINE", None),
+            ("SDKWORK_DATABASE_HOST", None),
+            ("SDKWORK_DATABASE_PORT", None),
+            ("SDKWORK_DATABASE_NAME", None),
+            ("SDKWORK_DATABASE_SCHEMA", None),
+            ("SDKWORK_DATABASE_USERNAME", None),
+            ("SDKWORK_DATABASE_PASSWORD", None),
+            ("SDKWORK_DATABASE_PASSWORD_FILE", None),
+            ("SDKWORK_DATABASE_SSL_MODE", None),
+            ("SDKWORK_DATABASE_FILE", None),
+            ("SDKWORK_DATABASE_MAX_CONNECTIONS", None),
+            ("SDKWORK_DATABASE_MIN_CONNECTIONS", None),
+            ("SDKWORK_DATABASE_ACQUIRE_TIMEOUT", None),
+            ("SDKWORK_DATABASE_IDLE_TIMEOUT", None),
+            ("SDKWORK_DATABASE_MAX_LIFETIME", None),
             ("DATABASE_URL", None),
-            ("SDKWORK_CLAW_DATABASE_URL", None),
-            ("SDKWORK_CLAW_DATABASE_ENGINE", None),
-            ("SDKWORK_CLAW_DATABASE_HOST", None),
-            ("SDKWORK_CLAW_DATABASE_PORT", None),
-            ("SDKWORK_CLAW_DATABASE_NAME", None),
-            ("SDKWORK_CLAW_DATABASE_USERNAME", None),
-            ("SDKWORK_CLAW_DATABASE_PASSWORD", Some("test_password")),
-            ("SDKWORK_CLAW_DATABASE_SSL_MODE", None),
-        ]);
-
-        let config = load_from_env("MISSING_TEST").expect("default claw profile should resolve");
-        assert_eq!(config.engine, DatabaseEngine::Postgres);
-        // URL uses default settings when no service-specific URL is set
-        assert!(config.url.contains("postgresql://"));
-        assert!(config.url.contains("sslmode=disable"));
+        ])
     }
 
     #[test]
     #[serial]
-    fn test_load_from_env_sqlite() {
-        let _guard = EnvGuard::set(&[
-            ("SDKWORK_SQLITE_TEST_DATABASE_URL", Some("sqlite:test.db")),
-            ("SDKWORK_SQLITE_TEST_DATABASE_ENGINE", Some("sqlite")),
-            ("SDKWORK_DATABASE_URL", None),
-            ("DATABASE_URL", None),
-            ("SDKWORK_CLAW_DATABASE_URL", None),
-            ("SDKWORK_CLAW_DATABASE_ENGINE", None),
-            ("SDKWORK_CLAW_DATABASE_HOST", None),
-        ]);
+    fn unset_environment_uses_workspace_development_profile() {
+        let _guard = clear_database_env();
+        let config = load_from_env("MODELS").unwrap();
+        assert_eq!(config.engine, DatabaseEngine::Postgres);
+        assert_eq!(config.mode, DeploymentMode::Integrated);
+        assert_eq!(config.table_prefix, "models_");
+        assert!(config.url.contains("/sdkwork_ai_dev"));
+        assert!(config.url.contains("search_path%3Dsdkwork_ai_dev%2Cpublic"));
+    }
 
-        let config = load_from_env("SQLITE_TEST").unwrap();
+    #[test]
+    #[serial]
+    fn sqlite_uses_generic_client_local_keys() {
+        let _cleared = clear_database_env();
+        let _configured = EnvGuard::set(&[
+            ("SDKWORK_DATABASE_ENGINE", Some("sqlite")),
+            ("SDKWORK_DATABASE_FILE", Some("test.db")),
+        ]);
+        let config = load_from_env("MODELS").unwrap();
         assert_eq!(config.engine, DatabaseEngine::Sqlite);
         assert_eq!(config.url, "sqlite:test.db");
-        assert_eq!(config.max_connections, 10);
+        assert_eq!(config.mode, DeploymentMode::Standalone);
+        assert!(config.table_prefix.is_empty());
     }
 
     #[test]
     #[serial]
-    fn test_load_from_env_postgres() {
-        let url_key = "SDKWORK_PG_TEST_DATABASE_URL";
-        let max_key = "SDKWORK_PG_TEST_DATABASE_MAX_CONNECTIONS";
-        env::set_var(url_key, "postgres://localhost/test");
-        env::set_var(max_key, "32");
-
-        let config = load_from_env("PG_TEST").unwrap();
-        assert_eq!(config.engine, DatabaseEngine::Postgres);
-        assert_eq!(config.max_connections, 32);
-
-        env::remove_var(url_key);
-        env::remove_var(max_key);
-    }
-
-    #[test]
-    #[serial]
-    fn test_load_from_env_postgres_ssl_mode_from_env() {
-        let _guard = EnvGuard::set(&[
-            (
-                "SDKWORK_PG_SSL_TEST_DATABASE_URL",
-                Some("postgresql://127.0.0.1/test"),
-            ),
-            ("SDKWORK_PG_SSL_TEST_DATABASE_SSL_MODE", Some("disable")),
+    fn generic_pool_settings_apply_to_every_module() {
+        let _cleared = clear_database_env();
+        let _configured = EnvGuard::set(&[
+            ("SDKWORK_DATABASE_MAX_CONNECTIONS", Some("32")),
+            ("SDKWORK_DATABASE_MIN_CONNECTIONS", Some("4")),
         ]);
-
-        let config = load_from_env("PG_SSL_TEST").unwrap();
-        assert_eq!(config.postgres.ssl_mode, PgSslMode::Disable);
+        let models = load_from_env("MODELS").unwrap();
+        let iam = load_from_env("IAM").unwrap();
+        assert_eq!(models.max_connections, 32);
+        assert_eq!(iam.max_connections, 32);
+        assert_eq!(models.min_connections, 4);
+        assert_eq!(iam.min_connections, 4);
+        assert_eq!(models.url, iam.url);
     }
 
     #[test]
     #[serial]
-    fn test_load_from_env_postgres_ssl_mode_from_url() {
-        let _guard = EnvGuard::set(&[(
-            "SDKWORK_PG_SSL_URL_TEST_DATABASE_URL",
-            Some("postgresql://127.0.0.1/test?sslmode=disable"),
-        )]);
-
-        let config = load_from_env("PG_SSL_URL_TEST").unwrap();
-        assert_eq!(config.postgres.ssl_mode, PgSslMode::Disable);
+    fn service_prefixed_database_key_fails_closed() {
+        let _cleared = clear_database_env();
+        let retired_key = ["SDKWORK", "MODELS", "DATABASE", "URL"].join("_");
+        let previous = env::var(&retired_key).ok();
+        env::set_var(&retired_key, "postgresql://models:secret@localhost/models");
+        let error = load_from_env("MODELS").unwrap_err().to_string();
+        match previous {
+            Some(value) => env::set_var(&retired_key, value),
+            None => env::remove_var(&retired_key),
+        }
+        assert!(error.contains(&retired_key));
     }
 
     #[test]
     #[serial]
-    fn test_load_from_env_integrated_mode() {
-        let url_key = "SDKWORK_INT_TEST_DATABASE_URL";
-        let mode_key = "SDKWORK_INT_TEST_DATABASE_MODE";
-        env::set_var(url_key, "postgres://localhost/shared");
-        env::set_var(mode_key, "integrated");
-
-        let config = load_from_env("INT_TEST").unwrap();
-        assert_eq!(config.mode, DeploymentMode::Integrated);
-        assert_eq!(config.table_prefix, "int_test_");
-
-        env::remove_var(url_key);
-        env::remove_var(mode_key);
+    fn conflicting_engine_and_url_fail_closed() {
+        let _cleared = clear_database_env();
+        let _configured = EnvGuard::set(&[
+            ("SDKWORK_DATABASE_ENGINE", Some("sqlite")),
+            (
+                "SDKWORK_DATABASE_URL",
+                Some("postgresql://sdkwork_ai_dev:secret@localhost/sdkwork_ai_dev"),
+            ),
+        ]);
+        let error = load_from_env("MODELS").unwrap_err().to_string();
+        assert!(error.contains("conflicts with database URL engine"));
     }
 }

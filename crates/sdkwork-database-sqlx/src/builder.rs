@@ -112,8 +112,7 @@ impl PoolBuilder {
         // Validate configuration
         if self.config.url.is_empty() {
             return Err(PoolError::InvalidUrl(
-                "Database URL is empty. Set SDKWORK_*_DATABASE_URL environment variable."
-                    .to_string(),
+                "Database URL is empty. Set SDKWORK_DATABASE_* environment fields.".to_string(),
             ));
         }
 

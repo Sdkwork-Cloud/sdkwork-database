@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use sdkwork_database_config::workspace_database::normalize_workspace_postgres_url;
 use sdkwork_database_config::{DatabaseConfig, DatabaseEngine, PgSslMode};
 use sqlx::AnyPool;
 use tokio::sync::OnceCell;
@@ -50,7 +51,7 @@ impl DatabaseIdentity {
         let host = url.host_str().unwrap_or("localhost").to_ascii_lowercase();
         let port = url.port().unwrap_or(5432);
         let database = url.path().trim_start_matches('/').to_string();
-        let mut schema = "public".to_string();
+        let mut schema = database.clone();
         let mut tls_mode = postgres_ssl_mode_name(config.postgres.ssl_mode).to_string();
 
         for (key, value) in url.query_pairs() {
@@ -284,12 +285,15 @@ fn config_with_max_connections(mut config: DatabaseConfig, max_connections: u32)
 fn normalize_config_engine(mut config: DatabaseConfig) -> Result<DatabaseConfig, PoolError> {
     if config.url.is_empty() {
         return Err(PoolError::InvalidUrl(
-            "Database URL is empty. Set SDKWORK_*_DATABASE_URL environment variable.".to_string(),
+            "Database URL is empty. Set SDKWORK_DATABASE_* environment fields.".to_string(),
         ));
     }
 
     if let Some(engine) = DatabaseEngine::from_url(&config.url) {
         config.engine = engine;
+    }
+    if config.engine == DatabaseEngine::Postgres {
+        config.url = normalize_workspace_postgres_url(&config.url)?;
     }
 
     Ok(config)

@@ -42,7 +42,7 @@
     "dependencyApiExports": [],
     "dependencyApiSurfaces": [],
     "events": ["database.lifecycle.state_changed"],
-    "configKeys": ["SDKWORK_<SERVICE_CODE>_DATABASE_AUTO_MIGRATE", "SDKWORK_<SERVICE_CODE>_DATABASE_SEED_ON_BOOT", "SDKWORK_DATABASE_TEST_POSTGRES_URL"]
+    "configKeys": ["SDKWORK_DATABASE_AUTO_MIGRATE", "SDKWORK_DATABASE_SEED_ON_BOOT", "SDKWORK_DATABASE_TEST_POSTGRES_URL"]
   },
   "verification": {
     "commands": [

@@ -59,7 +59,7 @@ impl RegistryLifecycleOrchestrator {
     /// This is the **convention-over-configuration** entry point for
     /// federated assembly integration. Each module's manifest drives
     /// `auto_migrate`, `seed_on_boot`, `seed_locale`, and `seed_profile`,
-    /// overridable through `SDKWORK_<SERVICE_CODE>_DATABASE_*` env vars.
+    /// overridable through the process-wide `SDKWORK_DATABASE_*` lifecycle keys.
     ///
     /// Federated hosts (e.g. ClawRouter) register all `*-database-host`
     /// modules into a `DatabaseModuleRegistry` and call this method once on

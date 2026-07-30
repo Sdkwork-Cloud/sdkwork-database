@@ -199,11 +199,8 @@ async fn drift_uses_the_established_pool_schema_after_environment_changes() {
     .await
     .expect("create schema-authority pool");
 
-    let _misleading_environment = [
-        EnvironmentVariableGuard::set("SDKWORK_SCHEMA_AUTHORITY_DATABASE_SCHEMA", &decoy_schema),
-        EnvironmentVariableGuard::set("SDKWORK_CLAW_DATABASE_SCHEMA", &decoy_schema),
-        EnvironmentVariableGuard::set("SDKWORK_DATABASE_SCHEMA", &decoy_schema),
-    ];
+    let _misleading_environment =
+        EnvironmentVariableGuard::set("SDKWORK_DATABASE_SCHEMA", &decoy_schema);
     let temp = TempDir::new().expect("create temporary database module");
     write_drift_module(temp.path()).expect("write drift module");
 

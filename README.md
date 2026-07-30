@@ -114,15 +114,17 @@ if result.status == HealthStatus::Healthy {
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `SDKWORK_{SERVICE}_DATABASE_URL` | Database connection URL | Required |
-| `SDKWORK_{SERVICE}_DATABASE_ENGINE` | Database engine (sqlite/postgres) | Auto-detect |
-| `SDKWORK_{SERVICE}_DATABASE_MODE` | Deployment mode (standalone/integrated) | standalone |
-| `SDKWORK_{SERVICE}_DATABASE_TABLE_PREFIX` | Table prefix for integrated mode | `{service}_` |
-| `SDKWORK_{SERVICE}_DATABASE_MAX_CONNECTIONS` | Maximum connections | 16 |
-| `SDKWORK_{SERVICE}_DATABASE_MIN_CONNECTIONS` | Minimum connections | 1 |
-| `SDKWORK_{SERVICE}_DATABASE_ACQUIRE_TIMEOUT` | Acquire timeout (seconds) | 10 |
-| `SDKWORK_{SERVICE}_DATABASE_IDLE_TIMEOUT` | Idle timeout (seconds) | 300 |
-| `SDKWORK_{SERVICE}_DATABASE_MAX_LIFETIME` | Max lifetime (seconds) | 1800 |
+| `SDKWORK_DATABASE_URL` | Explicit workspace database URL override | Structured fields or development profile |
+| `SDKWORK_DATABASE_ENGINE` | Database engine (`postgresql`, or `sqlite` for client-local data) | Auto-detect |
+| `SDKWORK_DATABASE_SCHEMA` | Workspace PostgreSQL schema; equal to the environment database name | Environment profile |
+| `SDKWORK_DATABASE_MAX_CONNECTIONS` | Process pool connection budget | 10 |
+| `SDKWORK_DATABASE_MIN_CONNECTIONS` | Minimum connections | 1 |
+| `SDKWORK_DATABASE_ACQUIRE_TIMEOUT` | Acquire timeout (seconds) | 10 |
+| `SDKWORK_DATABASE_IDLE_TIMEOUT` | Idle timeout (seconds) | 300 |
+| `SDKWORK_DATABASE_MAX_LIFETIME` | Max lifetime (seconds) | 1800 |
+
+All modules in one process read the same fields. `serviceCode` selects table
+ownership metadata and the derived module table prefix; it is not an env prefix.
 
 ### TOML Configuration
 
@@ -237,4 +239,3 @@ MIT OR Apache-2.0
 - [docs/README.md](docs/README.md)
 - [docs/product/prd/PRD.md](docs/product/prd/PRD.md)
 - [docs/architecture/tech/TECH_ARCHITECTURE.md](docs/architecture/tech/TECH_ARCHITECTURE.md)
-

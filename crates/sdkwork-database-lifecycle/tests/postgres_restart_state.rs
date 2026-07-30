@@ -207,14 +207,8 @@ async fn lifecycle_restart_preserves_advanced_state_and_pool_schema_authority() 
             .ok_or_else(|| std::io::Error::other("PostgreSQL identity should be available"))?;
         let current_schema = identity.current_schema().to_string();
 
-        let _misleading_environment = [
-            EnvironmentVariableGuard::set(
-                "SDKWORK_RESTART_AUTHORITY_DATABASE_SCHEMA",
-                &decoy_schema,
-            ),
-            EnvironmentVariableGuard::set("SDKWORK_CLAW_DATABASE_SCHEMA", &decoy_schema),
-            EnvironmentVariableGuard::set("SDKWORK_DATABASE_SCHEMA", &decoy_schema),
-        ];
+        let _misleading_environment =
+            EnvironmentVariableGuard::set("SDKWORK_DATABASE_SCHEMA", &decoy_schema);
 
         let first_module = Arc::new(DefaultDatabaseModule::from_app_root(temp.path())?);
         let second_module = Arc::new(DefaultDatabaseModule::from_app_root(temp.path())?);

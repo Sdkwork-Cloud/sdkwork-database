@@ -45,7 +45,9 @@ cargo run -p sdkwork-database-cli -- --app-root . drift
 cargo run -p sdkwork-database-cli -- --app-root . drift-check
 ```
 
-Requires `SDKWORK_{SERVICE}_DATABASE_URL` or manifest `serviceCode` via `-s`.
+Uses the workspace-scoped `SDKWORK_DATABASE_*` profile. Manifest `serviceCode`
+and `-s` select module ownership and diagnostics only; they never select a
+different database, schema, credential, pool, or lifecycle environment.
 
 Recommended application `package.json` wiring:
 

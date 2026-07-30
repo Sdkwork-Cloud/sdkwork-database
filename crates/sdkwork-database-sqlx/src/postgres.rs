@@ -37,6 +37,9 @@ fn mask_url(url: &str) -> String {
 pub async fn create_postgres_pool(
     config: &DatabaseConfig,
 ) -> Result<(PgPool, PoolContext), PoolError> {
+    let mut config = config.clone();
+    config.url =
+        sdkwork_database_config::workspace_database::normalize_workspace_postgres_url(&config.url)?;
     let pg_config = &config.postgres;
 
     let mut connect_options = PgConnectOptions::from_str(&config.url)
@@ -71,9 +74,7 @@ pub async fn create_postgres_pool(
         "PostgreSQL connection pool created"
     );
 
-    let ctx = PoolContext {
-        config: config.clone(),
-    };
+    let ctx = PoolContext { config };
 
     Ok((pool, ctx))
 }
