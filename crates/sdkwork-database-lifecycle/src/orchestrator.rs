@@ -475,6 +475,11 @@ impl LifecycleOrchestrator {
                 })? > 0;
                 Ok(present)
             }
+            #[allow(unreachable_patterns)]
+            _ => Err(LifecycleError::State(format!(
+                "database lifecycle support for engine '{}' is not enabled",
+                self.pool.engine()
+            ))),
         }
     }
 
