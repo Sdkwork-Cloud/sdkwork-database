@@ -350,6 +350,13 @@ macro_rules! impl_repository {
                             }
                             query.execute(pool).await.map_err($crate::error::RepositoryError::Database)?;
                         }
+                        #[cfg(not(feature = "sqlite"))]
+                        #[allow(unreachable_patterns)]
+                        _ => {
+                            return Err($crate::error::RepositoryError::Generic(
+                                "database repository was given an unsupported pool engine".to_owned(),
+                            ));
+                        }
                     }
                     Ok(())
                 }
@@ -385,6 +392,11 @@ macro_rules! impl_repository {
                                 None => Ok(None),
                             }
                         }
+                        #[cfg(not(feature = "sqlite"))]
+                        #[allow(unreachable_patterns)]
+                        _ => Err($crate::error::RepositoryError::Generic(
+                            "database repository was given an unsupported pool engine".to_owned(),
+                        )),
                     }
                 }
 
@@ -420,6 +432,11 @@ macro_rules! impl_repository {
                             }
                             Ok(entities)
                         }
+                        #[cfg(not(feature = "sqlite"))]
+                        #[allow(unreachable_patterns)]
+                        _ => Err($crate::error::RepositoryError::Generic(
+                            "database repository was given an unsupported pool engine".to_owned(),
+                        )),
                     }
                 }
 
@@ -510,6 +527,13 @@ macro_rules! impl_repository {
                             query = query.bind(id);
                             query.execute(pool).await.map_err($crate::error::RepositoryError::Database)?;
                         }
+                        #[cfg(not(feature = "sqlite"))]
+                        #[allow(unreachable_patterns)]
+                        _ => {
+                            return Err($crate::error::RepositoryError::Generic(
+                                "database repository was given an unsupported pool engine".to_owned(),
+                            ));
+                        }
                     }
                     Ok(())
                 }
@@ -534,6 +558,13 @@ macro_rules! impl_repository {
                                 .execute(pool)
                                 .await
                                 .map_err($crate::error::RepositoryError::Database)?;
+                        }
+                        #[cfg(not(feature = "sqlite"))]
+                        #[allow(unreachable_patterns)]
+                        _ => {
+                            return Err($crate::error::RepositoryError::Generic(
+                                "database repository was given an unsupported pool engine".to_owned(),
+                            ));
                         }
                     }
                     Ok(())
@@ -565,6 +596,11 @@ macro_rules! impl_repository {
                             use sqlx::Row;
                             Ok(row.get::<i64, _>("count"))
                         }
+                        #[cfg(not(feature = "sqlite"))]
+                        #[allow(unreachable_patterns)]
+                        _ => Err($crate::error::RepositoryError::Generic(
+                            "database repository was given an unsupported pool engine".to_owned(),
+                        )),
                     }
                 }
             }

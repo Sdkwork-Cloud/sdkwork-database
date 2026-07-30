@@ -148,6 +148,11 @@ pub async fn introspect_table_column_details(
             }
             Ok(result)
         }
+        #[cfg(not(feature = "sqlite"))]
+        #[allow(unreachable_patterns)]
+        _ => Err(DriftError::Introspect(
+            "database drift inspector was given an unsupported pool engine".to_owned(),
+        )),
     }
 }
 
@@ -279,6 +284,11 @@ pub async fn introspect_table_index_details(
             }
             Ok(result)
         }
+        #[cfg(not(feature = "sqlite"))]
+        #[allow(unreachable_patterns)]
+        _ => Err(DriftError::Introspect(
+            "database drift inspector was given an unsupported pool engine".to_owned(),
+        )),
     }
 }
 
@@ -476,6 +486,11 @@ pub async fn introspect_table_constraint_details(
             }
             Ok(result)
         }
+        #[cfg(not(feature = "sqlite"))]
+        #[allow(unreachable_patterns)]
+        _ => Err(DriftError::Introspect(
+            "database drift inspector was given an unsupported pool engine".to_owned(),
+        )),
     }
 }
 
@@ -505,6 +520,11 @@ pub async fn introspect_tables(pool: &DatabasePool) -> Result<Vec<String>, Drift
             .map_err(|error| DriftError::Introspect(format!("postgres tables: {error}")))?;
             Ok(rows)
         }
+        #[cfg(not(feature = "sqlite"))]
+        #[allow(unreachable_patterns)]
+        _ => Err(DriftError::Introspect(
+            "database drift inspector was given an unsupported pool engine".to_owned(),
+        )),
     }
 }
 

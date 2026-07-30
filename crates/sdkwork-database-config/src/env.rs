@@ -181,6 +181,7 @@ mod tests {
             ("SDKWORK_DATABASE_ACQUIRE_TIMEOUT", None),
             ("SDKWORK_DATABASE_IDLE_TIMEOUT", None),
             ("SDKWORK_DATABASE_MAX_LIFETIME", None),
+            ("SDKWORK_DATABASE_SCHEMA_FALLBACK_PUBLIC", None),
             ("DATABASE_URL", None),
         ])
     }
@@ -194,7 +195,8 @@ mod tests {
         assert_eq!(config.mode, DeploymentMode::Integrated);
         assert_eq!(config.table_prefix, "models_");
         assert!(config.url.contains("/sdkwork_ai_dev"));
-        assert!(config.url.contains("search_path%3Dsdkwork_ai_dev%2Cpublic"));
+        assert!(config.url.contains("search_path%3Dsdkwork_ai_dev"));
+        assert!(!config.url.contains("%2Cpublic"));
     }
 
     #[test]

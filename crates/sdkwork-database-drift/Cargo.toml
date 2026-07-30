@@ -15,6 +15,7 @@ postgres = [
     "sdkwork-database-lifecycle/postgres",
 ]
 sqlite = [
+    "postgres",
     "sqlx/sqlite",
     "sdkwork-database-sqlx/sqlite",
     "sdkwork-database-history/sqlite",

@@ -330,10 +330,20 @@ fn normalize_workspace_postgres_url_with_schema(
         )));
     }
 
-    let fallback_public = env_optional("SDKWORK_DATABASE_SCHEMA_FALLBACK_PUBLIC")
-        .map_or(true, |value| {
-            !matches!(value.to_ascii_lowercase().as_str(), "0" | "false" | "no")
-        });
+    let fallback_public = match env_optional("SDKWORK_DATABASE_SCHEMA_FALLBACK_PUBLIC") {
+        None => false,
+        Some(value) if matches!(value.to_ascii_lowercase().as_str(), "0" | "false" | "no") => {
+            false
+        }
+        Some(value) if matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes") => {
+            true
+        }
+        Some(value) => {
+            return Err(ConfigError::InvalidConfig(format!(
+                "SDKWORK_DATABASE_SCHEMA_FALLBACK_PUBLIC must be true or false, got {value:?}"
+            )))
+        }
+    };
     let search_path = if fallback_public {
         format!("{schema},public")
     } else {
@@ -519,12 +529,45 @@ mod tests {
             .any(|value| value.contains("statement_timeout=5000")));
         assert!(options
             .iter()
-            .any(|value| value.contains("search_path=sdkwork_ai_dev,public")));
+            .any(|value| value.contains("search_path=sdkwork_ai_dev")));
         assert!(options
             .iter()
             .all(|value| !value.contains("search_path=wrong")));
-        assert!(normalized.contains("options=-c%20search_path%3Dsdkwork_ai_dev%2Cpublic"));
+        assert!(options.iter().all(|value| !value.contains(",public")));
+        assert!(normalized.contains("options=-c%20search_path%3Dsdkwork_ai_dev"));
         assert!(!normalized.contains("options=-c+search_path"));
+    }
+
+    #[test]
+    #[serial]
+    fn explicit_public_fallback_is_opt_in() {
+        let _cleared = canonical_keys_cleared();
+        let _configured = EnvGuard::set(&[(
+            "SDKWORK_DATABASE_SCHEMA_FALLBACK_PUBLIC",
+            Some("true"),
+        )]);
+        let normalized = normalize_workspace_postgres_url(
+            "postgresql://sdkwork_ai_dev:secret@localhost/sdkwork_ai_dev",
+        )
+        .unwrap();
+        assert!(normalized.contains("search_path%3Dsdkwork_ai_dev%2Cpublic"));
+    }
+
+    #[test]
+    #[serial]
+    fn invalid_public_fallback_value_fails_closed() {
+        let _cleared = canonical_keys_cleared();
+        let _configured = EnvGuard::set(&[(
+            "SDKWORK_DATABASE_SCHEMA_FALLBACK_PUBLIC",
+            Some("sometimes"),
+        )]);
+        let error = normalize_workspace_postgres_url(
+            "postgresql://sdkwork_ai_dev:secret@localhost/sdkwork_ai_dev",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("SDKWORK_DATABASE_SCHEMA_FALLBACK_PUBLIC"));
+        assert!(error.contains("must be true or false"));
     }
 
     #[test]
@@ -535,7 +578,8 @@ mod tests {
             "postgresql://sdkwork_ai_test:secret@localhost/sdkwork_ai_test_run_42",
         )
         .unwrap();
-        assert!(normalized.contains("search_path%3Dsdkwork_ai_test_run_42%2Cpublic"));
+        assert!(normalized.contains("search_path%3Dsdkwork_ai_test_run_42"));
+        assert!(!normalized.contains("%2Cpublic"));
     }
 
     #[test]
@@ -560,7 +604,8 @@ mod tests {
         )
         .unwrap();
         assert!(normalized.contains("/sdkwork_ai_test_run_42"));
-        assert!(normalized.contains("search_path%3Dsdkwork_ai_test_run_42%2Cpublic"));
+        assert!(normalized.contains("search_path%3Dsdkwork_ai_test_run_42"));
+        assert!(!normalized.contains("%2Cpublic"));
     }
 
     #[test]

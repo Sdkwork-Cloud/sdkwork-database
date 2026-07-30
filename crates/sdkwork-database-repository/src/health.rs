@@ -86,6 +86,13 @@ impl HealthChecker {
                     .map_err(RepositoryError::Database)?;
                 start.elapsed()
             }
+            #[cfg(not(feature = "sqlite"))]
+            #[allow(unreachable_patterns)]
+            _ => {
+                return Err(RepositoryError::Generic(
+                    "database repository was given an unsupported pool engine".to_owned(),
+                ));
+            }
         };
 
         let latency_ms = latency.as_millis() as u64;
@@ -96,6 +103,13 @@ impl HealthChecker {
             sdkwork_database_sqlx::DatabasePool::Sqlite(pool, _) => (pool.size(), pool.num_idle()),
             sdkwork_database_sqlx::DatabasePool::Postgres(pool, _) => {
                 (pool.size(), pool.num_idle())
+            }
+            #[cfg(not(feature = "sqlite"))]
+            #[allow(unreachable_patterns)]
+            _ => {
+                return Err(RepositoryError::Generic(
+                    "database repository was given an unsupported pool engine".to_owned(),
+                ));
             }
         };
 
@@ -112,6 +126,9 @@ impl HealthChecker {
             #[cfg(feature = "sqlite")]
             sdkwork_database_sqlx::DatabasePool::Sqlite(_, _) => "SQLite",
             sdkwork_database_sqlx::DatabasePool::Postgres(_, _) => "PostgreSQL",
+            #[cfg(not(feature = "sqlite"))]
+            #[allow(unreachable_patterns)]
+            _ => "Unsupported",
         };
 
         Ok(HealthCheckResult {
