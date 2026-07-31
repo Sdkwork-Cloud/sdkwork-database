@@ -61,3 +61,13 @@ Thumbs.db
 *.tsbuildinfo
 **/.cache/
 
+
+# SDKWork local-only and generated artifacts
+.env
+.env.*
+!.env.example
+!.env.*.example
+**/build/
+*.log
+.DS_Store
+Thumbs.db

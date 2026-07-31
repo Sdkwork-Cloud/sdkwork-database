@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "kind": "sdkwork.component.spec",
+  "component": {
+    "name": "sdkwork-database-config",
+    "displayName": "SDKWork Database Configuration",
+    "version": "0.1.0",
+    "type": "rust-crate",
+    "root": "sdkwork-database/crates/sdkwork-database-config",
+    "domain": "database",
+    "capability": "workspace-database-configuration",
+    "languages": ["rust"],
+    "generated": false,
+    "status": "active",
+    "manifests": ["Cargo.toml", "specs/component.spec.json"]
+  },
+  "canonicalSpecs": [
+    {"file": "COMPONENT_SPEC.md", "path": "../../../sdkwork-specs/COMPONENT_SPEC.md", "purpose": "Component ownership and integration contract."},
+    {"file": "MODULE_SPEC.md", "path": "../../../sdkwork-specs/MODULE_SPEC.md", "purpose": "Reusable Rust module boundary."},
+    {"file": "CODE_STYLE_SPEC.md", "path": "../../../sdkwork-specs/CODE_STYLE_SPEC.md", "purpose": "Authored source style."},
+    {"file": "NAMING_SPEC.md", "path": "../../../sdkwork-specs/NAMING_SPEC.md", "purpose": "Canonical database and Rust names."},
+    {"file": "RUST_CODE_SPEC.md", "path": "../../../sdkwork-specs/RUST_CODE_SPEC.md", "purpose": "Rust module and verification boundaries."},
+    {"file": "CONFIG_SPEC.md", "path": "../../../sdkwork-specs/CONFIG_SPEC.md", "purpose": "Runtime configuration precedence and fail-closed parsing."},
+    {"file": "ENVIRONMENT_SPEC.md", "path": "../../../sdkwork-specs/ENVIRONMENT_SPEC.md", "purpose": "Workspace-scoped SDKWORK_DATABASE_* contract."},
+    {"file": "DATABASE_SPEC.md", "path": "../../../sdkwork-specs/DATABASE_SPEC.md", "purpose": "Database identity and schema semantics."},
+    {"file": "DATABASE_FRAMEWORK_SPEC.md", "path": "../../../sdkwork-specs/DATABASE_FRAMEWORK_SPEC.md", "purpose": "Database framework integration."},
+    {"file": "SECURITY_SPEC.md", "path": "../../../sdkwork-specs/SECURITY_SPEC.md", "purpose": "Credential handling and retired-key rejection."},
+    {"file": "TEST_SPEC.md", "path": "../../../sdkwork-specs/TEST_SPEC.md", "purpose": "Configuration contract verification."}
+  ],
+  "contracts": {
+    "layerRole": "backend-provider",
+    "publicExports": ["."],
+    "providedPorts": [
+      {"name": "databaseConfig", "export": "."},
+      {"name": "workspaceDatabaseConfig", "export": "."}
+    ],
+    "requiredPorts": [],
+    "runtimeEntrypoints": [
+      "env::load_from_env",
+      "workspace_database::resolve_workspace_database_url",
+      "workspace_database::normalize_workspace_postgres_url",
+      "workspace_database::workspace_postgres_test_database_url"
+    ],
+    "routeManifest": null,
+    "sdkClients": [],
+    "sdkDependencies": [],
+    "dependencyApiExports": [],
+    "dependencyApiSurfaces": [],
+    "events": [],
+    "configKeys": [
+      "SDKWORK_DATABASE_URL",
+      "SDKWORK_DATABASE_ENGINE",
+      "SDKWORK_DATABASE_HOST",
+      "SDKWORK_DATABASE_PORT",
+      "SDKWORK_DATABASE_NAME",
+      "SDKWORK_DATABASE_SCHEMA",
+      "SDKWORK_DATABASE_SCHEMA_FALLBACK_PUBLIC",
+      "SDKWORK_DATABASE_USERNAME",
+      "SDKWORK_DATABASE_PASSWORD",
+      "SDKWORK_DATABASE_PASSWORD_FILE",
+      "SDKWORK_DATABASE_SSL_MODE",
+      "SDKWORK_DATABASE_FILE",
+      "SDKWORK_DATABASE_MAX_CONNECTIONS",
+      "SDKWORK_DATABASE_MIN_CONNECTIONS",
+      "SDKWORK_DATABASE_ACQUIRE_TIMEOUT",
+      "SDKWORK_DATABASE_IDLE_TIMEOUT",
+      "SDKWORK_DATABASE_MAX_LIFETIME"
+    ]
+  },
+  "verification": {
+    "commands": [
+      "cargo test -p sdkwork-database-config",
+      "cargo clippy -p sdkwork-database-config --tests -- -D warnings"
+    ]
+  }
+}

@@ -25,14 +25,14 @@
   ],
   "contracts": {
     "layerRole": "backend-provider",
-    "publicExports": ["crate-root"],
+    "publicExports": ["."],
     "providedPorts": [
-      {"name": "databasePool", "export": "crate-root"},
-      {"name": "processSharedDatabasePool", "export": "crate-root"},
-      {"name": "postgresSchemaIdentity", "export": "PostgresSchemaIdentity"}
+      {"name": "databasePool", "export": "."},
+      {"name": "processSharedDatabasePool", "export": "."},
+      {"name": "postgresSchemaIdentity", "export": "."}
     ],
     "requiredPorts": [
-      {"name": "databaseConfig", "export": "crate-root", "provider": "sdkwork-database-config"}
+      {"name": "databaseConfig", "export": ".", "provider": "sdkwork-database-config"}
     ],
     "runtimeEntrypoints": [
       "enable_process_shared_database_pool",
@@ -51,9 +51,9 @@
     "configKeys": [
       "SDKWORK_DATABASE_URL",
       "SDKWORK_DATABASE_SCHEMA",
+      "SDKWORK_DATABASE_MAX_CONNECTIONS",
       "SDKWORK_DATABASE_TEMPORARY_ANY_POOL_EXCEPTION",
-      "SDKWORK_DATABASE_TEMPORARY_DRIVER_POOL_COUNT",
-      "SDKWORK_<PROCESS>_DATABASE_MAX_CONNECTIONS"
+      "SDKWORK_DATABASE_TEMPORARY_DRIVER_POOL_COUNT"
     ]
   },
   "verification": {

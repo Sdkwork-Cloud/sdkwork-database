@@ -11,6 +11,19 @@ const DEFAULT_DEV_POSTGRES_USERNAME: &str = "sdkwork_ai_dev";
 const DEFAULT_DEV_POSTGRES_PASSWORD: &str = "sdkworkdev123";
 const DEFAULT_DEV_POSTGRES_SSL_MODE: &str = "disable";
 const DEFAULT_DEV_POSTGRES_MAX_CONNECTIONS: u32 = 10;
+const STRUCTURED_DATABASE_ENV_KEYS: &[&str] = &[
+    "SDKWORK_DATABASE_ENGINE",
+    "SDKWORK_DATABASE_HOST",
+    "SDKWORK_DATABASE_PORT",
+    "SDKWORK_DATABASE_NAME",
+    "SDKWORK_DATABASE_SCHEMA",
+    "SDKWORK_DATABASE_SCHEMA_FALLBACK_PUBLIC",
+    "SDKWORK_DATABASE_USERNAME",
+    "SDKWORK_DATABASE_PASSWORD",
+    "SDKWORK_DATABASE_PASSWORD_FILE",
+    "SDKWORK_DATABASE_SSL_MODE",
+    "SDKWORK_DATABASE_FILE",
+];
 
 fn normalize_optional(value: Option<String>) -> Option<String> {
     value
@@ -128,18 +141,10 @@ fn resolve_database_password() -> Result<Option<String>, ConfigError> {
 }
 
 fn resolve_database_url_from_structured_fields() -> Result<Option<String>, ConfigError> {
-    let field_keys = [
-        "SDKWORK_DATABASE_ENGINE",
-        "SDKWORK_DATABASE_HOST",
-        "SDKWORK_DATABASE_PORT",
-        "SDKWORK_DATABASE_NAME",
-        "SDKWORK_DATABASE_USERNAME",
-        "SDKWORK_DATABASE_PASSWORD",
-        "SDKWORK_DATABASE_PASSWORD_FILE",
-        "SDKWORK_DATABASE_SSL_MODE",
-        "SDKWORK_DATABASE_FILE",
-    ];
-    if !field_keys.iter().any(|key| env_optional(key).is_some()) {
+    if !STRUCTURED_DATABASE_ENV_KEYS
+        .iter()
+        .any(|key| env_optional(key).is_some())
+    {
         return Ok(None);
     }
 
@@ -209,15 +214,10 @@ pub fn resolve_workspace_database_url() -> Result<String, ConfigError> {
 
 /// Return whether the process explicitly provides a canonical database profile.
 pub fn workspace_database_env_is_configured() -> bool {
-    [
-        "SDKWORK_DATABASE_URL",
-        "SDKWORK_DATABASE_ENGINE",
-        "SDKWORK_DATABASE_HOST",
-        "SDKWORK_DATABASE_NAME",
-        "SDKWORK_DATABASE_FILE",
-    ]
-    .iter()
-    .any(|key| env_optional(key).is_some())
+    env_optional("SDKWORK_DATABASE_URL").is_some()
+        || STRUCTURED_DATABASE_ENV_KEYS
+            .iter()
+            .any(|key| env_optional(key).is_some())
 }
 
 /// Resolve and validate the canonical workspace PostgreSQL schema.
@@ -488,6 +488,33 @@ mod tests {
             resolve_workspace_database_url().unwrap(),
             "postgresql://sdkwork_ai_dev:sdkworkdev123@127.0.0.1:15432/sdkwork_ai_dev?sslmode=disable"
         );
+    }
+
+    #[test]
+    #[serial]
+    fn partial_structured_fields_are_detected_and_rejected() {
+        let _cleared = canonical_keys_cleared();
+        let _configured = EnvGuard::set(&[("SDKWORK_DATABASE_USERNAME", Some("sdkwork_ai_dev"))]);
+
+        assert!(workspace_database_env_is_configured());
+        let error = resolve_workspace_database_url().unwrap_err().to_string();
+        assert!(error.contains("SDKWORK_DATABASE_ENGINE"));
+    }
+
+    #[test]
+    #[serial]
+    fn schema_policy_only_profiles_are_detected_and_rejected() {
+        for (key, value) in [
+            ("SDKWORK_DATABASE_SCHEMA", "sdkwork_ai_dev"),
+            ("SDKWORK_DATABASE_SCHEMA_FALLBACK_PUBLIC", "false"),
+        ] {
+            let _cleared = canonical_keys_cleared();
+            let _configured = EnvGuard::set(&[(key, Some(value))]);
+
+            assert!(workspace_database_env_is_configured());
+            let error = resolve_workspace_database_url().unwrap_err().to_string();
+            assert!(error.contains("SDKWORK_DATABASE_ENGINE"));
+        }
     }
 
     #[test]
