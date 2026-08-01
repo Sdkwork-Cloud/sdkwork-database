@@ -370,7 +370,7 @@ async fn execute_sqlite_statement(
                 quote_sqlite_identifier(&column.column_name),
                 column.column_definition_tail
             );
-            sqlx::raw_sql(&add_column_sql)
+            sqlx::raw_sql(sqlx::AssertSqlSafe(add_column_sql.as_str()))
                 .execute(&mut *connection)
                 .await
                 .map_err(|error| {
@@ -380,7 +380,7 @@ async fn execute_sqlite_statement(
         return Ok(());
     }
 
-    sqlx::raw_sql(sql)
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
         .execute(connection)
         .await
         .map_err(|error| HistoryError::Sql(format!("sqlite atomic statement failed: {error}")))?;
@@ -407,7 +407,7 @@ async fn execute_transactional_sql_script(
                     "sqlite transactional script connection failed: {error}"
                 ))
             })?;
-            if let Err(error) = sqlx::raw_sql(transactional_script)
+            if let Err(error) = sqlx::raw_sql(sqlx::AssertSqlSafe(transactional_script))
                 .execute(&mut *connection)
                 .await
             {
@@ -429,7 +429,7 @@ async fn execute_transactional_sql_script(
                     "postgres transactional script connection failed: {error}"
                 ))
             })?;
-            if let Err(error) = sqlx::raw_sql(transactional_script)
+            if let Err(error) = sqlx::raw_sql(sqlx::AssertSqlSafe(transactional_script))
                 .execute(&mut *connection)
                 .await
             {
@@ -507,14 +507,14 @@ pub async fn execute_sql(pool: &DatabasePool, sql: &str) -> Result<(), HistoryEr
             if execute_sqlite_add_column_if_not_exists(sqlite_pool, sql).await? {
                 return Ok(());
             }
-            sqlx::raw_sql(sql)
+            sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
                 .execute(sqlite_pool)
                 .await
                 .map_err(|e| HistoryError::Sql(format!("sqlite execute failed: {e}")))?;
         }
         #[cfg(feature = "postgres")]
         DatabasePool::Postgres(pg_pool, _) => {
-            sqlx::raw_sql(sql)
+            sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
                 .execute(pg_pool)
                 .await
                 .map_err(|e| HistoryError::Sql(format!("postgres execute failed: {e}")))?;
@@ -556,7 +556,7 @@ async fn execute_sqlite_add_column_if_not_exists(
             quote_sqlite_identifier(&column.column_name),
             column.column_definition_tail
         );
-        sqlx::raw_sql(&add_column_sql)
+        sqlx::raw_sql(sqlx::AssertSqlSafe(add_column_sql.as_str()))
             .execute(pool)
             .await
             .map_err(|error| {
@@ -577,7 +577,7 @@ async fn sqlite_column_exists(
         "SELECT COUNT(*) FROM pragma_table_info({}) WHERE name = $1",
         quote_sqlite_string_literal(table_name)
     );
-    let count = sqlx::query_scalar::<_, i64>(&query)
+    let count = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(query.as_str()))
         .bind(column_name)
         .fetch_one(pool)
         .await
@@ -597,7 +597,7 @@ async fn sqlite_column_exists_on_connection(
         "SELECT COUNT(*) FROM pragma_table_info({}) WHERE name = $1",
         quote_sqlite_string_literal(table_name)
     );
-    let count = sqlx::query_scalar::<_, i64>(&query)
+    let count = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(query.as_str()))
         .bind(column_name)
         .fetch_one(connection)
         .await
@@ -847,7 +847,7 @@ pub async fn migration_checksum(
     match pool {
         #[cfg(feature = "sqlite")]
         DatabasePool::Sqlite(sqlite_pool, _) => {
-            let row = sqlx::query(query)
+            let row = sqlx::query(sqlx::AssertSqlSafe(query))
                 .bind(module_id)
                 .bind(version)
                 .bind(engine_name)
@@ -858,7 +858,7 @@ pub async fn migration_checksum(
         }
         #[cfg(feature = "postgres")]
         DatabasePool::Postgres(pg_pool, _) => {
-            let row = sqlx::query(query)
+            let row = sqlx::query(sqlx::AssertSqlSafe(query))
                 .bind(module_id)
                 .bind(version)
                 .bind(engine_name)
@@ -1003,7 +1003,7 @@ pub async fn is_seed_applied(
     match pool {
         #[cfg(feature = "sqlite")]
         DatabasePool::Sqlite(sqlite_pool, _) => {
-            let row = sqlx::query(query)
+            let row = sqlx::query(sqlx::AssertSqlSafe(query))
                 .bind(module_id)
                 .bind(seed_id)
                 .bind(locale)
@@ -1015,7 +1015,7 @@ pub async fn is_seed_applied(
         }
         #[cfg(feature = "postgres")]
         DatabasePool::Postgres(pg_pool, _) => {
-            let row = sqlx::query(query)
+            let row = sqlx::query(sqlx::AssertSqlSafe(query))
                 .bind(module_id)
                 .bind(seed_id)
                 .bind(locale)
@@ -1049,7 +1049,7 @@ pub async fn record_seed(
     match pool {
         #[cfg(feature = "sqlite")]
         DatabasePool::Sqlite(sqlite_pool, _) => {
-            sqlx::query(query)
+            sqlx::query(sqlx::AssertSqlSafe(query))
                 .bind(module_id)
                 .bind(seed_id)
                 .bind(locale)
@@ -1062,7 +1062,7 @@ pub async fn record_seed(
         }
         #[cfg(feature = "postgres")]
         DatabasePool::Postgres(pg_pool, _) => {
-            sqlx::query(query)
+            sqlx::query(sqlx::AssertSqlSafe(query))
                 .bind(module_id)
                 .bind(seed_id)
                 .bind(locale)
@@ -1097,7 +1097,7 @@ pub async fn insert_installation_state_if_absent(
                   ON CONFLICT(module_id) DO NOTHING";
     let rows_affected = match pool {
         #[cfg(feature = "sqlite")]
-        DatabasePool::Sqlite(sqlite_pool, _) => sqlx::query(query)
+        DatabasePool::Sqlite(sqlite_pool, _) => sqlx::query(sqlx::AssertSqlSafe(query))
             .bind(module_id)
             .bind(contract_version)
             .bind(seed_locale)
@@ -1108,7 +1108,7 @@ pub async fn insert_installation_state_if_absent(
             .map_err(|error| HistoryError::State(error.to_string()))?
             .rows_affected(),
         #[cfg(feature = "postgres")]
-        DatabasePool::Postgres(postgres_pool, _) => sqlx::query(query)
+        DatabasePool::Postgres(postgres_pool, _) => sqlx::query(sqlx::AssertSqlSafe(query))
             .bind(module_id)
             .bind(contract_version)
             .bind(seed_locale)
@@ -1144,7 +1144,7 @@ pub async fn upsert_installation_state(
     match pool {
         #[cfg(feature = "sqlite")]
         DatabasePool::Sqlite(sqlite_pool, _) => {
-            sqlx::query(query)
+            sqlx::query(sqlx::AssertSqlSafe(query))
                 .bind(module_id)
                 .bind(contract_version)
                 .bind(seed_locale)
@@ -1156,7 +1156,7 @@ pub async fn upsert_installation_state(
         }
         #[cfg(feature = "postgres")]
         DatabasePool::Postgres(pg_pool, _) => {
-            sqlx::query(query)
+            sqlx::query(sqlx::AssertSqlSafe(query))
                 .bind(module_id)
                 .bind(contract_version)
                 .bind(seed_locale)
@@ -1193,7 +1193,7 @@ pub async fn fetch_installation_state(
     match pool {
         #[cfg(feature = "sqlite")]
         DatabasePool::Sqlite(sqlite_pool, _) => {
-            let row = sqlx::query(query)
+            let row = sqlx::query(sqlx::AssertSqlSafe(query))
                 .bind(module_id)
                 .fetch_optional(sqlite_pool)
                 .await
@@ -1208,7 +1208,7 @@ pub async fn fetch_installation_state(
         }
         #[cfg(feature = "postgres")]
         DatabasePool::Postgres(pg_pool, _) => {
-            let row = sqlx::query(query)
+            let row = sqlx::query(sqlx::AssertSqlSafe(query))
                 .bind(module_id)
                 .fetch_optional(pg_pool)
                 .await
@@ -1247,7 +1247,7 @@ pub async fn list_applied_seeds(
     match pool {
         #[cfg(feature = "sqlite")]
         DatabasePool::Sqlite(sqlite_pool, _) => {
-            let rows = sqlx::query(query)
+            let rows = sqlx::query(sqlx::AssertSqlSafe(query))
                 .bind(module_id)
                 .fetch_all(sqlite_pool)
                 .await
@@ -1264,7 +1264,7 @@ pub async fn list_applied_seeds(
         }
         #[cfg(feature = "postgres")]
         DatabasePool::Postgres(pg_pool, _) => {
-            let rows = sqlx::query(query)
+            let rows = sqlx::query(sqlx::AssertSqlSafe(query))
                 .bind(module_id)
                 .fetch_all(pg_pool)
                 .await
@@ -1302,7 +1302,7 @@ async fn fetch_version_column(
     match pool {
         #[cfg(feature = "sqlite")]
         DatabasePool::Sqlite(sqlite_pool, _) => {
-            let rows = sqlx::query(query)
+            let rows = sqlx::query(sqlx::AssertSqlSafe(query))
                 .bind(module_id)
                 .bind(engine_name)
                 .fetch_all(sqlite_pool)
@@ -1312,7 +1312,7 @@ async fn fetch_version_column(
         }
         #[cfg(feature = "postgres")]
         DatabasePool::Postgres(pg_pool, _) => {
-            let rows = sqlx::query(query)
+            let rows = sqlx::query(sqlx::AssertSqlSafe(query))
                 .bind(module_id)
                 .bind(engine_name)
                 .fetch_all(pg_pool)

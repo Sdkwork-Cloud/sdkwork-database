@@ -172,7 +172,7 @@ async fn installation_state(
 
 async fn drop_schema(admin: &sqlx::PgPool, schema: &str) -> Result<(), sqlx::Error> {
     let statement = format!("DROP SCHEMA IF EXISTS {schema} CASCADE");
-    sqlx::query(&statement).execute(admin).await?;
+    sqlx::query(sqlx::AssertSqlSafe(statement.as_str())).execute(admin).await?;
     Ok(())
 }
 
@@ -191,12 +191,12 @@ async fn lifecycle_restart_preserves_advanced_state_and_pool_schema_authority() 
     let test_result: Result<LifecycleEvidence, Box<dyn std::error::Error>> = async {
         let create_actual = format!("CREATE SCHEMA {actual_schema}");
         let create_decoy = format!("CREATE SCHEMA {decoy_schema}");
-        sqlx::query(&create_actual).execute(&admin).await?;
-        sqlx::query(&create_decoy).execute(&admin).await?;
+        sqlx::query(sqlx::AssertSqlSafe(create_actual.as_str())).execute(&admin).await?;
+        sqlx::query(sqlx::AssertSqlSafe(create_decoy.as_str())).execute(&admin).await?;
         let create_anchor = format!(
             "CREATE TABLE {actual_schema}.restart_authority_anchor (id BIGINT PRIMARY KEY)"
         );
-        sqlx::query(&create_anchor).execute(&admin).await?;
+        sqlx::query(sqlx::AssertSqlSafe(create_anchor.as_str())).execute(&admin).await?;
 
         write_module(temp.path(), "1.0.0")?;
         let pool_url = postgres_url_with_schema(&base_url, &actual_schema)?;

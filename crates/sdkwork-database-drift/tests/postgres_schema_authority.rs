@@ -132,7 +132,7 @@ tables:
 
 async fn drop_schema(admin: &sqlx::PgPool, schema: &str) -> Result<(), sqlx::Error> {
     let statement = format!("DROP SCHEMA IF EXISTS {schema} CASCADE");
-    sqlx::query(&statement).execute(admin).await?;
+    sqlx::query(sqlx::AssertSqlSafe(statement.as_str())).execute(admin).await?;
     Ok(())
 }
 
@@ -149,11 +149,11 @@ async fn drift_uses_the_established_pool_schema_after_environment_changes() {
 
     let create_actual = format!("CREATE SCHEMA {actual_schema}");
     let create_decoy = format!("CREATE SCHEMA {decoy_schema}");
-    sqlx::query(&create_actual)
+    sqlx::query(sqlx::AssertSqlSafe(create_actual.as_str()))
         .execute(&admin)
         .await
         .expect("create actual schema");
-    sqlx::query(&create_decoy)
+    sqlx::query(sqlx::AssertSqlSafe(create_decoy.as_str()))
         .execute(&admin)
         .await
         .expect("create decoy schema");
@@ -179,11 +179,11 @@ async fn drift_uses_the_established_pool_schema_after_environment_changes() {
              ON {decoy_schema}.schema_authority_probe (payload); \
          CREATE TABLE {decoy_schema}.schema_authority_decoy_marker (id BIGINT PRIMARY KEY);"
     );
-    sqlx::raw_sql(&actual_ddl)
+    sqlx::raw_sql(sqlx::AssertSqlSafe(actual_ddl.as_str()))
         .execute(&admin)
         .await
         .expect("create actual schema fixtures");
-    sqlx::raw_sql(&decoy_ddl)
+    sqlx::raw_sql(sqlx::AssertSqlSafe(decoy_ddl.as_str()))
         .execute(&admin)
         .await
         .expect("create decoy schema fixtures");
