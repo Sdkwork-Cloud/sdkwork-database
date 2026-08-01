@@ -485,6 +485,11 @@ async fn ensure_registry_table(pool: &DatabasePool) -> Result<(), NodeAllocatorE
             )
             .await?;
         }
+        #[cfg(not(feature = "sqlite"))]
+        #[allow(unreachable_patterns)]
+        _ => {
+            return Err(NodeAllocatorError::PoolUnavailable);
+        }
     }
     Ok(())
 }
@@ -576,7 +581,7 @@ async fn ensure_sqlite_column(
     if columns.iter().any(|column| column.1 == column_name) {
         return Ok(());
     }
-    sqlx::query(alter_sql)
+    sqlx::query(sqlx::AssertSqlSafe(alter_sql))
         .execute(pool)
         .await
         .map_err(|e| NodeAllocatorError::Database(format!("expand registry column: {e}")))?;
@@ -670,6 +675,11 @@ async fn fetch_active_node_ids(
             .await
             .map_err(|e| NodeAllocatorError::Database(format!("fetch active ids: {e}")))?;
             validate_and_filter_active_node_ids(rows, now_ms)
+        }
+        #[cfg(not(feature = "sqlite"))]
+        #[allow(unreachable_patterns)]
+        _ => {
+            return Err(NodeAllocatorError::PoolUnavailable);
         }
     }
 }
@@ -794,6 +804,11 @@ async fn try_insert(
             .map_err(|e| NodeAllocatorError::Database(format!("insert: {e}")))?;
             Ok(row.map(|value| value.0))
         }
+        #[cfg(not(feature = "sqlite"))]
+        #[allow(unreachable_patterns)]
+        _ => {
+            return Err(NodeAllocatorError::PoolUnavailable);
+        }
     }
 }
 
@@ -914,6 +929,11 @@ async fn renew_lease(
             .await
             .map_err(|e| e.to_string())?;
             Ok(result.rows_affected() == 1)
+        }
+        #[cfg(not(feature = "sqlite"))]
+        #[allow(unreachable_patterns)]
+        _ => {
+            return Err("sqlite node registry requires the sqlite feature".to_owned());
         }
     }
 }
