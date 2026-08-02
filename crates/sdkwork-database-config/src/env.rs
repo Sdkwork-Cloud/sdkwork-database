@@ -1,6 +1,6 @@
 use std::env;
 
-use crate::database::{DatabaseConfig, DatabaseEngine, DeploymentMode};
+use crate::database::{DatabaseConfig, DatabaseEngine, DatabaseRole, DeploymentMode};
 use crate::error::ConfigError;
 use crate::postgres::{PgSslMode, PostgresConfig};
 use crate::sqlite::SqliteConfig;
@@ -8,12 +8,45 @@ use crate::workspace_database::{
     normalize_workspace_postgres_url, reject_retired_database_env, resolve_workspace_database_url,
 };
 
-/// Load one module's database configuration from the workspace-scoped environment.
+/// Load one module's server database configuration from the workspace-scoped
+/// environment.
 ///
 /// `service_name` identifies table ownership only. Connection identity, schema,
-/// pool sizing, and runtime policy always use `SDKWORK_DATABASE_*`.
+/// pool sizing, and runtime policy always use `SDKWORK_DATABASE_*`. The server
+/// role resolves the workspace PostgreSQL profile (ENVIRONMENT_SPEC §7.1) and is
+/// never redirected by `SDKWORK_DATABASE_SQLITE_URL`: client-local SQLite and the
+/// server profile coexist in one process (ENVIRONMENT_SPEC §7.2).
 pub fn load_from_env(service_name: &str) -> Result<DatabaseConfig, ConfigError> {
+    load_from_env_with_role(service_name, DatabaseRole::Server)
+}
+
+/// Load one module's client-local database configuration.
+///
+/// Client-local resolution is owned exclusively by `SDKWORK_DATABASE_SQLITE_URL`
+/// (ENVIRONMENT_SPEC §7.2). The workspace `SDKWORK_DATABASE_ENGINE` marker
+/// describes the server profile and may coexist without vetoing this selection;
+/// the value is still parsed so malformed markers fail closed.
+pub fn load_client_local_from_env(service_name: &str) -> Result<DatabaseConfig, ConfigError> {
+    load_from_env_with_role(service_name, DatabaseRole::ClientLocal)
+}
+
+/// Whether the process declares a client-local SQLite database URL.
+pub fn client_local_sqlite_url_configured() -> bool {
+    get_env_optional("SDKWORK_DATABASE_SQLITE_URL").is_some()
+}
+
+fn load_from_env_with_role(
+    service_name: &str,
+    role: DatabaseRole,
+) -> Result<DatabaseConfig, ConfigError> {
     reject_retired_database_env()?;
+    match role {
+        DatabaseRole::Server => load_server_config(service_name),
+        DatabaseRole::ClientLocal => load_client_local_config(),
+    }
+}
+
+fn load_server_config(service_name: &str) -> Result<DatabaseConfig, ConfigError> {
     let raw_url = resolve_workspace_database_url()?;
     let detected_engine = DatabaseEngine::from_url(&raw_url).ok_or_else(|| {
         ConfigError::InvalidUrl(format!("cannot detect database engine from URL: {raw_url}"))
@@ -43,13 +76,8 @@ pub fn load_from_env(service_name: &str) -> Result<DatabaseConfig, ConfigError> 
         DeploymentMode::Integrated => format!("{}_", service_name.to_ascii_lowercase()),
         DeploymentMode::Standalone => String::new(),
     };
-    let max_connections = get_env_as("SDKWORK_DATABASE_MAX_CONNECTIONS", 10_u32)?;
-    let min_connections = get_env_as("SDKWORK_DATABASE_MIN_CONNECTIONS", 1_u32)?;
-    if min_connections > max_connections {
-        return Err(ConfigError::InvalidConfig(format!(
-            "SDKWORK_DATABASE_MIN_CONNECTIONS ({min_connections}) exceeds SDKWORK_DATABASE_MAX_CONNECTIONS ({max_connections})"
-        )));
-    }
+    let (max_connections, min_connections, acquire_timeout_secs, idle_timeout_secs, max_lifetime_secs) =
+        resolve_pool_settings()?;
     let postgres_ssl_mode = resolve_postgres_ssl_mode(&url);
 
     Ok(DatabaseConfig {
@@ -59,15 +87,71 @@ pub fn load_from_env(service_name: &str) -> Result<DatabaseConfig, ConfigError> 
         table_prefix,
         max_connections,
         min_connections,
-        acquire_timeout_secs: get_env_as("SDKWORK_DATABASE_ACQUIRE_TIMEOUT", 10_u64)?,
-        idle_timeout_secs: get_env_as("SDKWORK_DATABASE_IDLE_TIMEOUT", 300_u64)?,
-        max_lifetime_secs: get_env_as("SDKWORK_DATABASE_MAX_LIFETIME", 1800_u64)?,
+        acquire_timeout_secs,
+        idle_timeout_secs,
+        max_lifetime_secs,
         sqlite: SqliteConfig::default(),
         postgres: PostgresConfig {
             ssl_mode: postgres_ssl_mode,
             ..Default::default()
         },
     })
+}
+
+fn load_client_local_config() -> Result<DatabaseConfig, ConfigError> {
+    let Some(raw_url) = get_env_optional("SDKWORK_DATABASE_SQLITE_URL") else {
+        return Err(ConfigError::MissingRequired(
+            "SDKWORK_DATABASE_SQLITE_URL is required for client-local database resolution (ENVIRONMENT_SPEC §7.2)"
+                .to_string(),
+        ));
+    };
+    if DatabaseEngine::from_url(&raw_url) != Some(DatabaseEngine::Sqlite) {
+        return Err(ConfigError::InvalidUrl(format!(
+            "client-local database URL must use the sqlite scheme: {raw_url}"
+        )));
+    }
+    // The workspace SDKWORK_DATABASE_ENGINE marker describes the server profile
+    // and coexists with the client-local URL (ENVIRONMENT_SPEC §7.2); parse it
+    // only so malformed markers fail closed instead of being silently ignored.
+    if let Some(value) = get_env_optional("SDKWORK_DATABASE_ENGINE") {
+        parse_database_engine(&value)?;
+    }
+    let (max_connections, min_connections, acquire_timeout_secs, idle_timeout_secs, max_lifetime_secs) =
+        resolve_pool_settings()?;
+
+    Ok(DatabaseConfig {
+        engine: DatabaseEngine::Sqlite,
+        url: raw_url,
+        mode: DeploymentMode::Standalone,
+        table_prefix: String::new(),
+        max_connections,
+        min_connections,
+        acquire_timeout_secs,
+        idle_timeout_secs,
+        max_lifetime_secs,
+        sqlite: SqliteConfig::default(),
+        postgres: PostgresConfig::default(),
+    })
+}
+
+fn resolve_pool_settings() -> Result<(u32, u32, u64, u64, u64), ConfigError> {
+    let max_connections = get_env_as("SDKWORK_DATABASE_MAX_CONNECTIONS", 10_u32)?;
+    let min_connections = get_env_as("SDKWORK_DATABASE_MIN_CONNECTIONS", 1_u32)?;
+    if min_connections > max_connections {
+        return Err(ConfigError::InvalidConfig(format!(
+            "SDKWORK_DATABASE_MIN_CONNECTIONS ({min_connections}) exceeds SDKWORK_DATABASE_MAX_CONNECTIONS ({max_connections})"
+        )));
+    }
+    let acquire_timeout_secs = get_env_as("SDKWORK_DATABASE_ACQUIRE_TIMEOUT", 10_u64)?;
+    let idle_timeout_secs = get_env_as("SDKWORK_DATABASE_IDLE_TIMEOUT", 300_u64)?;
+    let max_lifetime_secs = get_env_as("SDKWORK_DATABASE_MAX_LIFETIME", 1800_u64)?;
+    Ok((
+        max_connections,
+        min_connections,
+        acquire_timeout_secs,
+        idle_timeout_secs,
+        max_lifetime_secs,
+    ))
 }
 
 fn parse_database_engine(value: &str) -> Result<DatabaseEngine, ConfigError> {
@@ -166,6 +250,7 @@ mod tests {
     fn clear_database_env() -> EnvGuard {
         EnvGuard::set(&[
             ("SDKWORK_DATABASE_URL", None),
+            ("SDKWORK_DATABASE_SQLITE_URL", None),
             ("SDKWORK_DATABASE_ENGINE", None),
             ("SDKWORK_DATABASE_HOST", None),
             ("SDKWORK_DATABASE_PORT", None),
@@ -216,6 +301,136 @@ mod tests {
 
     #[test]
     #[serial]
+    fn client_local_sqlite_url_owns_sqlite_connection() {
+        let _cleared = clear_database_env();
+        let _configured = EnvGuard::set(&[(
+            "SDKWORK_DATABASE_SQLITE_URL",
+            Some("sqlite:///C:/Users/test/.sdkwork/birdcoder/data/models.sqlite3"),
+        )]);
+        let config = load_client_local_from_env("MODELS").unwrap();
+        assert_eq!(config.engine, DatabaseEngine::Sqlite);
+        assert_eq!(config.mode, DeploymentMode::Standalone);
+        assert!(config.table_prefix.is_empty());
+        assert_eq!(
+            config.url,
+            "sqlite:///C:/Users/test/.sdkwork/birdcoder/data/models.sqlite3"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn client_local_sqlite_url_ignores_server_profile_fields() {
+        let _cleared = clear_database_env();
+        let _configured = EnvGuard::set(&[
+            (
+                "SDKWORK_DATABASE_URL",
+                Some("postgresql://sdkwork_ai_dev:secret@localhost/sdkwork_ai_dev"),
+            ),
+            ("SDKWORK_DATABASE_SQLITE_URL", Some("sqlite:local.db")),
+        ]);
+        let config = load_client_local_from_env("IAM").unwrap();
+        assert_eq!(config.engine, DatabaseEngine::Sqlite);
+        assert_eq!(config.url, "sqlite:local.db");
+        assert_eq!(config.mode, DeploymentMode::Standalone);
+        assert!(config.table_prefix.is_empty());
+    }
+
+    #[test]
+    #[serial]
+    fn client_local_sqlite_and_server_engine_marker_coexist() {
+        let _cleared = clear_database_env();
+        let _configured = EnvGuard::set(&[
+            ("SDKWORK_DATABASE_ENGINE", Some("postgres")),
+            ("SDKWORK_DATABASE_SQLITE_URL", Some("sqlite:local.db")),
+        ]);
+        let config = load_client_local_from_env("MODELS").unwrap();
+        assert_eq!(config.engine, DatabaseEngine::Sqlite);
+        assert_eq!(config.url, "sqlite:local.db");
+        assert_eq!(config.mode, DeploymentMode::Standalone);
+        assert!(config.table_prefix.is_empty());
+    }
+
+    #[test]
+    #[serial]
+    fn server_role_ignores_client_local_sqlite_url() {
+        let _cleared = clear_database_env();
+        let _configured = EnvGuard::set(&[
+            (
+                "SDKWORK_DATABASE_URL",
+                Some("postgresql://sdkwork_ai_dev:secret@localhost/sdkwork_ai_dev"),
+            ),
+            ("SDKWORK_DATABASE_SQLITE_URL", Some("sqlite:local.db")),
+        ]);
+        let config = load_from_env("IAM").unwrap();
+        assert_eq!(config.engine, DatabaseEngine::Postgres);
+        assert_eq!(config.mode, DeploymentMode::Integrated);
+        assert_eq!(config.table_prefix, "iam_");
+        assert_eq!(
+            config.url,
+            "postgresql://sdkwork_ai_dev:secret@localhost/sdkwork_ai_dev?options=-c%20search_path%3Dsdkwork_ai_dev"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn server_role_with_workspace_profile_and_client_local_url_coexist() {
+        let _cleared = clear_database_env();
+        let _configured = EnvGuard::set(&[
+            ("SDKWORK_DATABASE_ENGINE", Some("postgresql")),
+            ("SDKWORK_DATABASE_HOST", Some("127.0.0.1")),
+            ("SDKWORK_DATABASE_PORT", Some("5432")),
+            ("SDKWORK_DATABASE_NAME", Some("sdkwork_ai_dev")),
+            ("SDKWORK_DATABASE_SCHEMA", Some("sdkwork_ai_dev")),
+            ("SDKWORK_DATABASE_USERNAME", Some("sdkwork_ai_dev")),
+            ("SDKWORK_DATABASE_PASSWORD", Some("sdkworkdev123")),
+            ("SDKWORK_DATABASE_SQLITE_URL", Some("sqlite:local.db")),
+        ]);
+        let server = load_from_env("IAM").unwrap();
+        assert_eq!(server.engine, DatabaseEngine::Postgres);
+        assert_eq!(server.mode, DeploymentMode::Integrated);
+        assert_eq!(server.table_prefix, "iam_");
+        assert!(server.url.starts_with("postgresql://"));
+        let client_local = load_client_local_from_env("MODELS").unwrap();
+        assert_eq!(client_local.engine, DatabaseEngine::Sqlite);
+        assert_eq!(client_local.url, "sqlite:local.db");
+        assert_eq!(client_local.mode, DeploymentMode::Standalone);
+        assert!(client_local.table_prefix.is_empty());
+    }
+
+    #[test]
+    #[serial]
+    fn client_local_role_requires_sqlite_url() {
+        let _cleared = clear_database_env();
+        let error = load_client_local_from_env("MODELS").unwrap_err().to_string();
+        assert!(error.contains("SDKWORK_DATABASE_SQLITE_URL is required"));
+    }
+
+    #[test]
+    #[serial]
+    fn client_local_role_rejects_non_sqlite_url() {
+        let _cleared = clear_database_env();
+        let _configured = EnvGuard::set(&[(
+            "SDKWORK_DATABASE_SQLITE_URL",
+            Some("postgresql://sdkwork_ai_dev:secret@localhost/sdkwork_ai_dev"),
+        )]);
+        let error = load_client_local_from_env("MODELS").unwrap_err().to_string();
+        assert!(error.contains("must use the sqlite scheme"));
+    }
+
+    #[test]
+    #[serial]
+    fn client_local_role_rejects_malformed_engine_marker() {
+        let _cleared = clear_database_env();
+        let _configured = EnvGuard::set(&[
+            ("SDKWORK_DATABASE_ENGINE", Some("oracle")),
+            ("SDKWORK_DATABASE_SQLITE_URL", Some("sqlite:local.db")),
+        ]);
+        let error = load_client_local_from_env("MODELS").unwrap_err().to_string();
+        assert!(error.contains("unsupported database engine"));
+    }
+
+    #[test]
+    #[serial]
     fn generic_pool_settings_apply_to_every_module() {
         let _cleared = clear_database_env();
         let _configured = EnvGuard::set(&[
@@ -229,6 +444,21 @@ mod tests {
         assert_eq!(models.min_connections, 4);
         assert_eq!(iam.min_connections, 4);
         assert_eq!(models.url, iam.url);
+    }
+
+    #[test]
+    #[serial]
+    fn pool_settings_apply_to_client_local_resolution() {
+        let _cleared = clear_database_env();
+        let _configured = EnvGuard::set(&[
+            ("SDKWORK_DATABASE_MAX_CONNECTIONS", Some("8")),
+            ("SDKWORK_DATABASE_MIN_CONNECTIONS", Some("2")),
+            ("SDKWORK_DATABASE_SQLITE_URL", Some("sqlite:local.db")),
+        ]);
+        let config = load_client_local_from_env("MODELS").unwrap();
+        assert_eq!(config.max_connections, 8);
+        assert_eq!(config.min_connections, 2);
+        assert_eq!(config.engine, DatabaseEngine::Sqlite);
     }
 
     #[test]

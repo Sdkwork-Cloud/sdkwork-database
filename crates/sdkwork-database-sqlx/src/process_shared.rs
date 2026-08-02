@@ -1,9 +1,12 @@
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
 
 use sdkwork_database_config::workspace_database::normalize_workspace_postgres_url;
 use sdkwork_database_config::{DatabaseConfig, DatabaseEngine, PgSslMode};
 #[cfg(feature = "any")]
 use sqlx::AnyPool;
+use tokio::sync::Mutex;
+#[cfg(feature = "any")]
 use tokio::sync::OnceCell;
 use url::Url;
 
@@ -12,15 +15,56 @@ use crate::{DatabasePool, PoolBuilder, PoolError};
 const DATABASE_POOL_DRIVER: &str = "sqlx::DatabasePool";
 
 static PROCESS_POOL_ENABLED: AtomicBool = AtomicBool::new(false);
-static PROCESS_POOL: OnceCell<ProcessPoolEntry> = OnceCell::const_new();
+static PROCESS_POOL: OnceLock<Mutex<ProcessPoolRegistry>> = OnceLock::new();
+/// Synchronous handle to the first installed process pool for health probes and
+/// post-bootstrap reads in processes without a canonical server pool.
+static PROCESS_POOL_HANDLE: OnceLock<DatabasePool> = OnceLock::new();
+/// Synchronous handle to the canonical server (PostgreSQL) pool; health probes
+/// and bootstrap reuse prefer this over the first-installed pool.
+static SERVER_POOL_HANDLE: OnceLock<DatabasePool> = OnceLock::new();
+/// Synchronous handle to the reserved temporary-driver capacity (when any).
+static TEMPORARY_DRIVER_MAX_CONNECTIONS: OnceLock<u32> = OnceLock::new();
 #[cfg(feature = "any")]
 static TEMPORARY_ANY_POOL: OnceCell<TemporaryAnyPoolEntry> = OnceCell::const_new();
+
+/// Process-local pool registry implementing the dual-database contract
+/// (ENVIRONMENT_SPEC §7.2): one canonical server (PostgreSQL) identity plus any
+/// number of declared client-local SQLite identities. The server identity stays
+/// strict so accidental per-module PostgreSQL drift still fails closed, while
+/// each client-local SQLite URL owns an independent pool.
+struct ProcessPoolRegistry {
+    server: Option<ProcessPoolEntry>,
+    client_local: Vec<ProcessPoolEntry>,
+    temporary_driver_pool_count: u32,
+    temporary_driver_max_connections: u32,
+}
+
+impl ProcessPoolRegistry {
+    fn new() -> Self {
+        Self {
+            server: None,
+            client_local: Vec::new(),
+            temporary_driver_pool_count: 0,
+            temporary_driver_max_connections: 0,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.server.is_none() && self.client_local.is_empty()
+    }
+
+    #[cfg(feature = "any")]
+    fn matching_entry(&self, identity: &DatabaseIdentity) -> Option<&ProcessPoolEntry> {
+        self.server
+            .iter()
+            .chain(self.client_local.iter())
+            .find(|entry| entry.identity == *identity)
+    }
+}
 
 struct ProcessPoolEntry {
     identity: DatabaseIdentity,
     pool: DatabasePool,
-    temporary_driver_pool_count: u32,
-    temporary_driver_max_connections: u32,
 }
 
 #[cfg(feature = "any")]
@@ -128,17 +172,18 @@ pub fn process_shared_database_pool_enabled() -> bool {
     PROCESS_POOL_ENABLED.load(Ordering::Acquire)
 }
 
-/// Return a clone of the installed process pool, if the first pool has been created.
+/// Return a clone of the canonical process pool: the server (PostgreSQL) pool
+/// when installed, otherwise the first pool created in the process.
 pub fn process_shared_database_pool() -> Option<DatabasePool> {
-    PROCESS_POOL.get().map(|entry| entry.pool.clone())
+    SERVER_POOL_HANDLE
+        .get()
+        .cloned()
+        .or_else(|| PROCESS_POOL_HANDLE.get().cloned())
 }
 
 /// Return the per-pool capacity reserved for each declared temporary driver.
 pub fn process_shared_temporary_driver_max_connections() -> Option<u32> {
-    PROCESS_POOL
-        .get()
-        .filter(|entry| entry.temporary_driver_pool_count > 0)
-        .map(|entry| entry.temporary_driver_max_connections)
+    TEMPORARY_DRIVER_MAX_CONNECTIONS.get().copied()
 }
 
 pub(crate) async fn create_or_reuse_process_pool(
@@ -150,32 +195,103 @@ pub(crate) async fn create_or_reuse_process_pool(
     }
 
     let requested_identity = DatabaseIdentity::from_config(&config)?;
-    let initialization_identity = requested_identity.clone();
     let process_max_connections = config.max_connections;
     let temporary_driver_pool_count = configured_temporary_driver_pool_count()?;
-    let (canonical_max_connections, temporary_driver_max_connections) =
-        temporary_driver_connection_budget(process_max_connections, temporary_driver_pool_count)?;
-    let entry = PROCESS_POOL
-        .get_or_try_init(|| async move {
-            let canonical_config = config_with_max_connections(config, canonical_max_connections);
-            let pool = PoolBuilder::new(canonical_config).build_unshared().await?;
-            Ok::<_, PoolError>(ProcessPoolEntry {
-                identity: initialization_identity,
-                pool,
-                temporary_driver_pool_count,
-                temporary_driver_max_connections,
-            })
-        })
-        .await?;
+    let registry = PROCESS_POOL.get_or_init(|| Mutex::new(ProcessPoolRegistry::new()));
+    let mut guard = registry.lock().await;
 
-    if entry.identity != requested_identity {
-        return Err(PoolError::ProcessPoolIdentityMismatch {
-            installed: entry.identity.redacted(),
-            requested: requested_identity.redacted(),
-        });
+    match requested_identity.engine {
+        DatabaseEngine::Postgres => {
+            if let Some(entry) = &guard.server {
+                if entry.identity != requested_identity {
+                    return Err(PoolError::ProcessPoolIdentityMismatch {
+                        installed: entry.identity.redacted(),
+                        requested: requested_identity.redacted(),
+                    });
+                }
+                return Ok(entry.pool.clone());
+            }
+            // The first process pool owns the process-wide temporary-driver
+            // budget; any later pool keeps its configured capacity.
+            let is_first = guard.is_empty();
+            let (effective_config, temporary_driver_max_connections) = if is_first {
+                let (canonical_max_connections, temporary_driver_max_connections) =
+                    temporary_driver_connection_budget(process_max_connections, temporary_driver_pool_count)?;
+                (
+                    config_with_max_connections(config, canonical_max_connections),
+                    temporary_driver_max_connections,
+                )
+            } else {
+                (config, 0)
+            };
+            let pool = PoolBuilder::new(effective_config).build_unshared().await?;
+            let pool = install_first_process_pool_handle(pool);
+            let _ = SERVER_POOL_HANDLE.set(pool.clone());
+            if is_first {
+                install_temporary_driver_budget(
+                    temporary_driver_pool_count,
+                    temporary_driver_max_connections,
+                );
+                guard.temporary_driver_pool_count = temporary_driver_pool_count;
+                guard.temporary_driver_max_connections = temporary_driver_max_connections;
+            }
+            guard.server = Some(ProcessPoolEntry {
+                identity: requested_identity,
+                pool: pool.clone(),
+            });
+            Ok(pool)
+        }
+        DatabaseEngine::Sqlite => {
+            if let Some(entry) = guard
+                .client_local
+                .iter()
+                .find(|entry| entry.identity == requested_identity)
+            {
+                return Ok(entry.pool.clone());
+            }
+            // Client-local SQLite identities are declared per URL and coexist
+            // with the canonical server pool (ENVIRONMENT_SPEC §7.2).
+            let is_first = guard.is_empty();
+            let (effective_config, temporary_driver_max_connections) = if is_first {
+                let (canonical_max_connections, temporary_driver_max_connections) =
+                    temporary_driver_connection_budget(process_max_connections, temporary_driver_pool_count)?;
+                (
+                    config_with_max_connections(config, canonical_max_connections),
+                    temporary_driver_max_connections,
+                )
+            } else {
+                (config, 0)
+            };
+            let pool = PoolBuilder::new(effective_config).build_unshared().await?;
+            let pool = install_first_process_pool_handle(pool);
+            if is_first {
+                install_temporary_driver_budget(
+                    temporary_driver_pool_count,
+                    temporary_driver_max_connections,
+                );
+                guard.temporary_driver_pool_count = temporary_driver_pool_count;
+                guard.temporary_driver_max_connections = temporary_driver_max_connections;
+            }
+            guard.client_local.push(ProcessPoolEntry {
+                identity: requested_identity,
+                pool: pool.clone(),
+            });
+            Ok(pool)
+        }
     }
+}
 
-    Ok(entry.pool.clone())
+/// Installs the first-created pool as the synchronous process pool handle.
+fn install_first_process_pool_handle(pool: DatabasePool) -> DatabasePool {
+    let _ = PROCESS_POOL_HANDLE.set(pool.clone());
+    pool
+}
+
+/// Records the reserved temporary-driver capacity for synchronous readers.
+fn install_temporary_driver_budget(pool_count: u32, temporary_max_connections: u32) {
+    if pool_count > 0 {
+        let _ = TEMPORARY_DRIVER_MAX_CONNECTIONS.set(temporary_max_connections);
+    }
 }
 
 #[cfg(feature = "any")]
@@ -191,22 +307,36 @@ pub(crate) async fn create_or_reuse_temporary_any_pool(
 
     let config = normalize_config_engine(config)?;
     let requested_identity = DatabaseIdentity::from_config(&config)?;
-    let process_entry = PROCESS_POOL
+    let registry = PROCESS_POOL
         .get()
         .ok_or(PoolError::ProcessPoolNotInstalled)?;
-    if process_entry.temporary_driver_pool_count == 0 {
+    let guard = registry.lock().await;
+    if guard.temporary_driver_pool_count == 0 {
         return Err(PoolError::TemporaryDriverCapacityNotReserved);
     }
-    if process_entry.identity != requested_identity {
+    let matching = guard.matching_entry(&requested_identity).ok_or_else(|| {
+        let installed = guard
+            .server
+            .as_ref()
+            .map(|entry| entry.identity.redacted())
+            .or_else(|| guard.client_local.first().map(|entry| entry.identity.redacted()))
+            .unwrap_or_else(|| "no process pool installed".to_string());
+        PoolError::ProcessPoolIdentityMismatch {
+            installed,
+            requested: requested_identity.redacted(),
+        }
+    })?;
+    if matching.identity != requested_identity {
         return Err(PoolError::ProcessPoolIdentityMismatch {
-            installed: process_entry.identity.redacted(),
+            installed: matching.identity.redacted(),
             requested: requested_identity.redacted(),
         });
     }
+    let temporary_driver_max_connections = guard.temporary_driver_max_connections;
+    drop(guard);
 
     let initialization_identity = requested_identity.clone();
-    let config =
-        config_with_max_connections(config, process_entry.temporary_driver_max_connections);
+    let config = config_with_max_connections(config, temporary_driver_max_connections);
     let entry = TEMPORARY_ANY_POOL
         .get_or_try_init(|| async move {
             let pool = crate::any::create_any_pool(&config).await?;

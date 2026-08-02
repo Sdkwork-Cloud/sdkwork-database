@@ -4,6 +4,11 @@
 //! connection pools using sqlx. PostgreSQL is the default server driver;
 //! client-local SQLite and compatibility AnyPool support are explicit features.
 //!
+//! Process-shared pool reuse ([`enable_process_shared_database_pool`])
+//! implements the dual-database contract of ENVIRONMENT_SPEC §7.2: one
+//! canonical server (PostgreSQL) identity stays strict, while every declared
+//! client-local SQLite URL owns an independent pool in the same process.
+//!
 //! # Quick Start
 //!
 //! ```rust,no_run

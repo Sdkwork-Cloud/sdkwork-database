@@ -46,6 +46,22 @@ pub enum DeploymentMode {
     Integrated,
 }
 
+/// Database resolution role for one module inside a process.
+///
+/// ENVIRONMENT_SPEC §7.2 allows the client-local SQLite URL and the workspace
+/// PostgreSQL profile to coexist in one process: client-local engines resolve
+/// SQLite through `SDKWORK_DATABASE_SQLITE_URL`; server engines keep resolving
+/// the PostgreSQL profile. A module selects its role when loading config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DatabaseRole {
+    /// Authoritative server relational state resolved from the workspace profile.
+    #[default]
+    Server,
+    /// Declared client-local data resolved exclusively from
+    /// `SDKWORK_DATABASE_SQLITE_URL`.
+    ClientLocal,
+}
+
 /// Main database configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatabaseConfig {
@@ -163,6 +179,15 @@ impl DatabaseConfig {
     /// Load configuration from environment variables for a given service.
     pub fn from_env(service_name: &str) -> Result<Self, crate::ConfigError> {
         crate::env::load_from_env(service_name)
+    }
+
+    /// Load the client-local SQLite configuration for a given service.
+    ///
+    /// Client-local resolution is owned exclusively by
+    /// `SDKWORK_DATABASE_SQLITE_URL` (ENVIRONMENT_SPEC §7.2) and coexists with
+    /// the workspace PostgreSQL profile in the same process.
+    pub fn load_client_local_from_env(service_name: &str) -> Result<Self, crate::ConfigError> {
+        crate::env::load_client_local_from_env(service_name)
     }
 
     /// Load configuration from a TOML file.

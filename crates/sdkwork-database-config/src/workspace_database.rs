@@ -212,8 +212,13 @@ pub fn resolve_workspace_database_url() -> Result<String, ConfigError> {
     Ok(default_dev_postgres_database_url())
 }
 
-/// Return whether the process explicitly provides a canonical database profile.
-pub fn workspace_database_env_is_configured() -> bool {
+/// Return whether the process explicitly provides a workspace PostgreSQL profile.
+///
+/// The client-local SQLite URL is an independent identity (ENVIRONMENT_SPEC
+/// §7.2) and does not count as a configured PostgreSQL profile: profile
+/// materialization must still apply when only `SDKWORK_DATABASE_SQLITE_URL`
+/// is present.
+pub fn workspace_postgres_env_is_configured() -> bool {
     env_optional("SDKWORK_DATABASE_URL").is_some()
         || STRUCTURED_DATABASE_ENV_KEYS
             .iter()
@@ -496,7 +501,7 @@ mod tests {
         let _cleared = canonical_keys_cleared();
         let _configured = EnvGuard::set(&[("SDKWORK_DATABASE_USERNAME", Some("sdkwork_ai_dev"))]);
 
-        assert!(workspace_database_env_is_configured());
+        assert!(workspace_postgres_env_is_configured());
         let error = resolve_workspace_database_url().unwrap_err().to_string();
         assert!(error.contains("SDKWORK_DATABASE_ENGINE"));
     }
@@ -511,10 +516,20 @@ mod tests {
             let _cleared = canonical_keys_cleared();
             let _configured = EnvGuard::set(&[(key, Some(value))]);
 
-            assert!(workspace_database_env_is_configured());
+            assert!(workspace_postgres_env_is_configured());
             let error = resolve_workspace_database_url().unwrap_err().to_string();
             assert!(error.contains("SDKWORK_DATABASE_ENGINE"));
         }
+    }
+
+    #[test]
+    #[serial]
+    fn client_local_sqlite_url_alone_is_not_a_postgres_profile() {
+        let _cleared = canonical_keys_cleared();
+        let _configured = EnvGuard::set(&[
+            ("SDKWORK_DATABASE_SQLITE_URL", Some("sqlite:local.db")),
+        ]);
+        assert!(!workspace_postgres_env_is_configured());
     }
 
     #[test]

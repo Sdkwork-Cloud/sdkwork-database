@@ -1477,6 +1477,7 @@ dependencies = [
  "libsqlite3-sys",
  "sdkwork-database-config",
  "serde",
+ "serial_test",
  "sqlx",
  "tempfile",
  "thiserror",
