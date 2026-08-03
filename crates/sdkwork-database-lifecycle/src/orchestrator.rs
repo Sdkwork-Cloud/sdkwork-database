@@ -431,17 +431,19 @@ impl LifecycleOrchestrator {
     ) -> Result<bool, LifecycleError> {
         use sdkwork_database_sqlx::DatabasePool;
 
-        let query = r#"
-            SELECT EXISTS (
-                SELECT 1
-                FROM information_schema.tables
-                WHERE table_schema = $1
-                  AND table_name = $2
-            ) AS present
-        "#;
-
         match &self.pool {
+            #[cfg(feature = "postgres")]
             DatabasePool::Postgres(pool, _) => {
+                // The information_schema anchor check is PostgreSQL-specific;
+                // SQLite uses sqlite_master below.
+                let query = r#"
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM information_schema.tables
+                        WHERE table_schema = $1
+                          AND table_name = $2
+                    ) AS present
+                "#;
                 let schema = self.pool.postgres_schema_identity().await?.ok_or_else(|| {
                     LifecycleError::State(
                         "PostgreSQL schema identity is unavailable for the lifecycle pool"

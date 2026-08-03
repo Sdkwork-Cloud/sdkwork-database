@@ -39,3 +39,28 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 url.workspace = true
 sdkwork-database-config = { path = "../sdkwork-database-config" }
 sdkwork-database-sqlx = { path = "../sdkwork-database-sqlx", default-features = false }
+
+[[test]]
+name = "migrate_seed_smoke"
+path = "tests/migrate_seed_smoke.rs"
+required-features = ["sqlite"]
+
+[[test]]
+name = "installation_state_machine"
+path = "tests/installation_state_machine.rs"
+required-features = ["sqlite"]
+
+[[test]]
+name = "checksum_immutability"
+path = "tests/checksum_immutability.rs"
+required-features = ["sqlite"]
+
+[[test]]
+name = "registry_orchestrator"
+path = "tests/registry_orchestrator.rs"
+required-features = ["sqlite"]
+
+[[test]]
+name = "postgres_restart_state"
+path = "tests/postgres_restart_state.rs"
+required-features = ["postgres"]
