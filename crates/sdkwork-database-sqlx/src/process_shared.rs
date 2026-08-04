@@ -216,7 +216,10 @@ pub(crate) async fn create_or_reuse_process_pool(
             let is_first = guard.is_empty();
             let (effective_config, temporary_driver_max_connections) = if is_first {
                 let (canonical_max_connections, temporary_driver_max_connections) =
-                    temporary_driver_connection_budget(process_max_connections, temporary_driver_pool_count)?;
+                    temporary_driver_connection_budget(
+                        process_max_connections,
+                        temporary_driver_pool_count,
+                    )?;
                 (
                     config_with_max_connections(config, canonical_max_connections),
                     temporary_driver_max_connections,
@@ -254,7 +257,10 @@ pub(crate) async fn create_or_reuse_process_pool(
             let is_first = guard.is_empty();
             let (effective_config, temporary_driver_max_connections) = if is_first {
                 let (canonical_max_connections, temporary_driver_max_connections) =
-                    temporary_driver_connection_budget(process_max_connections, temporary_driver_pool_count)?;
+                    temporary_driver_connection_budget(
+                        process_max_connections,
+                        temporary_driver_pool_count,
+                    )?;
                 (
                     config_with_max_connections(config, canonical_max_connections),
                     temporary_driver_max_connections,
@@ -319,7 +325,12 @@ pub(crate) async fn create_or_reuse_temporary_any_pool(
             .server
             .as_ref()
             .map(|entry| entry.identity.redacted())
-            .or_else(|| guard.client_local.first().map(|entry| entry.identity.redacted()))
+            .or_else(|| {
+                guard
+                    .client_local
+                    .first()
+                    .map(|entry| entry.identity.redacted())
+            })
             .unwrap_or_else(|| "no process pool installed".to_string());
         PoolError::ProcessPoolIdentityMismatch {
             installed,

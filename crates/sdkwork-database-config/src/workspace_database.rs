@@ -526,9 +526,8 @@ mod tests {
     #[serial]
     fn client_local_sqlite_url_alone_is_not_a_postgres_profile() {
         let _cleared = canonical_keys_cleared();
-        let _configured = EnvGuard::set(&[
-            ("SDKWORK_DATABASE_SQLITE_URL", Some("sqlite:local.db")),
-        ]);
+        let _configured =
+            EnvGuard::set(&[("SDKWORK_DATABASE_SQLITE_URL", Some("sqlite:local.db"))]);
         assert!(!workspace_postgres_env_is_configured());
     }
 

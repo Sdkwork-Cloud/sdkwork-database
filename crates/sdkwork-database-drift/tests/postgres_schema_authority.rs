@@ -132,7 +132,9 @@ tables:
 
 async fn drop_schema(admin: &sqlx::PgPool, schema: &str) -> Result<(), sqlx::Error> {
     let statement = format!("DROP SCHEMA IF EXISTS {schema} CASCADE");
-    sqlx::query(sqlx::AssertSqlSafe(statement.as_str())).execute(admin).await?;
+    sqlx::query(sqlx::AssertSqlSafe(statement.as_str()))
+        .execute(admin)
+        .await?;
     Ok(())
 }
 

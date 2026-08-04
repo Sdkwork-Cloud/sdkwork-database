@@ -76,8 +76,13 @@ fn load_server_config(service_name: &str) -> Result<DatabaseConfig, ConfigError>
         DeploymentMode::Integrated => format!("{}_", service_name.to_ascii_lowercase()),
         DeploymentMode::Standalone => String::new(),
     };
-    let (max_connections, min_connections, acquire_timeout_secs, idle_timeout_secs, max_lifetime_secs) =
-        resolve_pool_settings()?;
+    let (
+        max_connections,
+        min_connections,
+        acquire_timeout_secs,
+        idle_timeout_secs,
+        max_lifetime_secs,
+    ) = resolve_pool_settings()?;
     let postgres_ssl_mode = resolve_postgres_ssl_mode(&url);
 
     Ok(DatabaseConfig {
@@ -116,8 +121,13 @@ fn load_client_local_config() -> Result<DatabaseConfig, ConfigError> {
     if let Some(value) = get_env_optional("SDKWORK_DATABASE_ENGINE") {
         parse_database_engine(&value)?;
     }
-    let (max_connections, min_connections, acquire_timeout_secs, idle_timeout_secs, max_lifetime_secs) =
-        resolve_pool_settings()?;
+    let (
+        max_connections,
+        min_connections,
+        acquire_timeout_secs,
+        idle_timeout_secs,
+        max_lifetime_secs,
+    ) = resolve_pool_settings()?;
 
     Ok(DatabaseConfig {
         engine: DatabaseEngine::Sqlite,
@@ -401,7 +411,9 @@ mod tests {
     #[serial]
     fn client_local_role_requires_sqlite_url() {
         let _cleared = clear_database_env();
-        let error = load_client_local_from_env("MODELS").unwrap_err().to_string();
+        let error = load_client_local_from_env("MODELS")
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("SDKWORK_DATABASE_SQLITE_URL is required"));
     }
 
@@ -413,7 +425,9 @@ mod tests {
             "SDKWORK_DATABASE_SQLITE_URL",
             Some("postgresql://sdkwork_ai_dev:secret@localhost/sdkwork_ai_dev"),
         )]);
-        let error = load_client_local_from_env("MODELS").unwrap_err().to_string();
+        let error = load_client_local_from_env("MODELS")
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("must use the sqlite scheme"));
     }
 
@@ -425,7 +439,9 @@ mod tests {
             ("SDKWORK_DATABASE_ENGINE", Some("oracle")),
             ("SDKWORK_DATABASE_SQLITE_URL", Some("sqlite:local.db")),
         ]);
-        let error = load_client_local_from_env("MODELS").unwrap_err().to_string();
+        let error = load_client_local_from_env("MODELS")
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("unsupported database engine"));
     }
 

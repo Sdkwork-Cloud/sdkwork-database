@@ -219,12 +219,16 @@ impl DatabasePool {
             Self::Sqlite(sqlite_pool, _) => {
                 // sqlx 0.9 `raw_sql` requires `SqlSafeStr`; dynamic SQL is
                 // asserted safe here by contract (see # Safety above).
-                let result = sqlx::raw_sql(sqlx::AssertSqlSafe(sql)).execute(sqlite_pool).await?;
+                let result = sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
+                    .execute(sqlite_pool)
+                    .await?;
                 Ok(result.rows_affected())
             }
             #[cfg(feature = "postgres")]
             Self::Postgres(pg_pool, _) => {
-                let result = sqlx::raw_sql(sqlx::AssertSqlSafe(sql)).execute(pg_pool).await?;
+                let result = sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
+                    .execute(pg_pool)
+                    .await?;
                 Ok(result.rows_affected())
             }
         }
