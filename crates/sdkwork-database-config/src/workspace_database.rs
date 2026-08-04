@@ -535,7 +535,7 @@ mod tests {
     #[serial]
     fn retired_application_prefix_is_rejected() {
         let _cleared = canonical_keys_cleared();
-        let retired_key = ["SDKWORK", "CLAW", "DATABASE", "URL"].join("_");
+        let retired_key = ["SDKWORK", "CLOUD", "DATABASE", "URL"].join("_");
         let previous = env::var(&retired_key).ok();
         env::set_var(&retired_key, "postgresql://ignored");
         let error = resolve_workspace_database_url().unwrap_err().to_string();
@@ -620,7 +620,7 @@ mod tests {
     fn application_database_identity_is_rejected() {
         let _guard = canonical_keys_cleared();
         let error = normalize_workspace_postgres_url(
-            "postgresql://claw:secret@localhost/sdkwork_clawrouter_dev",
+            "postgresql://cloud:secret@localhost/sdkwork_cloudrouter_dev",
         )
         .unwrap_err()
         .to_string();

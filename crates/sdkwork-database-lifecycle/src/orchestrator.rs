@@ -230,7 +230,12 @@ impl LifecycleOrchestrator {
             self.module.before_migration(&ctx).await?;
 
             let started = Instant::now();
-            execute_sql_script(&self.pool, &sql).await?;
+            // Migrations execute atomically: scripts without an explicit
+            // transaction boundary are wrapped in BEGIN/COMMIT, so a mid-script
+            // failure can never leave a partially migrated schema, and
+            // `SET LOCAL` timeout guards inside scripts apply inside the
+            // transaction where they are effective.
+            execute_sql_script_atomically(&self.pool, &sql).await?;
             let execution_ms = started.elapsed().as_millis() as i64;
 
             record_migration(

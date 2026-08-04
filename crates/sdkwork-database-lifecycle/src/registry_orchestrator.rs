@@ -24,9 +24,9 @@ impl RegistryLifecycleOrchestrator {
 
     /// Override the `applied_by` attribution recorded in migration/seed history.
     ///
-    /// Federated hosts (e.g. ClawRouter) should set this to identify which
+    /// Federated hosts (e.g. CloudRouter) should set this to identify which
     /// integration context triggered the bootstrap (e.g.
-    /// `"sdkwork-clawrouter-commerce"`).
+    /// `"sdkwork-cloudrouter-commerce"`).
     pub fn with_applied_by(mut self, applied_by: impl Into<String>) -> Self {
         self.applied_by = applied_by.into();
         self
@@ -61,7 +61,7 @@ impl RegistryLifecycleOrchestrator {
     /// `auto_migrate`, `seed_on_boot`, `seed_locale`, and `seed_profile`,
     /// overridable through the process-wide `SDKWORK_DATABASE_*` lifecycle keys.
     ///
-    /// Federated hosts (e.g. ClawRouter) register all `*-database-host`
+    /// Federated hosts (e.g. CloudRouter) register all `*-database-host`
     /// modules into a `DatabaseModuleRegistry` and call this method once on
     /// the shared pool — no per-capability manual bootstrap wiring needed.
     pub async fn bootstrap_all_from_env(
