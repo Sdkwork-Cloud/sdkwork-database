@@ -2,22 +2,33 @@
 #
 # This file shows all available configuration options for sdkwork-database.
 # Copy this file and modify as needed for your service.
+#
+# Connection identity follows the unified workspace PostgreSQL profile
+# (ENVIRONMENT_SPEC §7.1): all SDKWork applications share one database and
+# schema per lifecycle environment (sdkwork_ai_dev / sdkwork_ai_test /
+# sdkwork_ai_staging / sdkwork_ai_prod). Production/staging runtime config
+# resolves from the workspace database configuration directory
+# (ENVIRONMENT_SPEC §7.3, /etc/sdkwork/database/database.toml on Linux) or the
+# SDKWORK_DATABASE_* process env contract.
 
 [database]
 # Database engine: "sqlite" or "postgres"
 engine = "sqlite"
 
 # Database connection URL
-# SQLite: "sqlite:data.db" or "sqlite::memory:"
-# PostgreSQL: "postgres://user:password@host:port/database"
+# SQLite (client-local only): "sqlite:data.db" or "sqlite::memory:"
+# PostgreSQL: structured fields (host/port/database/username/password_file)
+# are the primary contract; a "postgresql://" URL is an operator override.
 url = "sqlite:data/app.db"
 
 # Deployment mode: "standalone" or "integrated"
-# - standalone: each service has its own database
-# - integrated: all services share one database with table prefixes
-mode = "standalone"
+# - integrated: the default for authoritative PostgreSQL server targets — all
+#   services share the unified workspace database and schema, isolated by
+#   module-owned table prefixes (ENVIRONMENT_SPEC §7.1).
+# - standalone: declared client-local SQLite data only.
+mode = "integrated"
 
-# Table prefix for integrated mode
+# Table prefix for integrated mode (module ownership, not connection identity)
 # Only used when mode = "integrated"
 table_prefix = ""
 

@@ -2,6 +2,10 @@ use std::fs;
 
 use url::Url;
 
+use crate::config_dir::{
+    load_workspace_database_config_profile, load_workspace_database_config_profile_for,
+    resolve_database_url_from_profile,
+};
 use crate::error::ConfigError;
 
 const DEFAULT_DEV_POSTGRES_HOST: &str = "127.0.0.1";
@@ -200,11 +204,33 @@ fn resolve_database_url_from_structured_fields() -> Result<Option<String>, Confi
     }
 }
 
-/// Resolve the single workspace database URL from canonical environment fields.
+/// Resolve the single workspace database URL from canonical environment fields
+/// and the workspace database configuration directory (ENVIRONMENT_SPEC §7.3).
+///
+/// Precedence: `SDKWORK_DATABASE_URL` env override → directory profile
+/// (`database.toml`/`database.env`) → structured `SDKWORK_DATABASE_*` env
+/// fields → built-in development default. The directory profile is skipped for
+/// development/test environments.
 pub fn resolve_workspace_database_url() -> Result<String, ConfigError> {
+    resolve_workspace_database_url_for(None)
+}
+
+/// Like [`resolve_workspace_database_url`], including the dated per-application
+/// migration fallback directory for `service_name` (ENVIRONMENT_SPEC §7.3
+/// step 3).
+pub fn resolve_workspace_database_url_for(
+    service_name: Option<&str>,
+) -> Result<String, ConfigError> {
     reject_retired_database_env()?;
     if let Some(url) = env_optional("SDKWORK_DATABASE_URL") {
         return Ok(url);
+    }
+    let profile = match service_name {
+        Some(name) => load_workspace_database_config_profile_for(Some(name))?,
+        None => load_workspace_database_config_profile()?,
+    };
+    if let Some(profile) = profile {
+        return resolve_database_url_from_profile(&profile);
     }
     if let Some(url) = resolve_database_url_from_structured_fields()? {
         return Ok(url);
@@ -217,12 +243,14 @@ pub fn resolve_workspace_database_url() -> Result<String, ConfigError> {
 /// The client-local SQLite URL is an independent identity (ENVIRONMENT_SPEC
 /// §7.2) and does not count as a configured PostgreSQL profile: profile
 /// materialization must still apply when only `SDKWORK_DATABASE_SQLITE_URL`
-/// is present.
+/// is present. A workspace database configuration directory profile counts as
+/// an explicitly configured profile.
 pub fn workspace_postgres_env_is_configured() -> bool {
     env_optional("SDKWORK_DATABASE_URL").is_some()
         || STRUCTURED_DATABASE_ENV_KEYS
             .iter()
             .any(|key| env_optional(key).is_some())
+        || crate::config_dir::workspace_database_config_dir_profile_configured()
 }
 
 /// Resolve and validate the canonical workspace PostgreSQL schema.

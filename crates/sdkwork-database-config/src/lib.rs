@@ -18,6 +18,7 @@
 //! let config = DatabaseConfig::from_env("MY_SERVICE").unwrap();
 //! ```
 
+pub mod config_dir;
 pub mod database;
 pub mod env;
 pub mod error;

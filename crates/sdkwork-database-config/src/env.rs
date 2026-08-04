@@ -1,11 +1,13 @@
 use std::env;
 
+use crate::config_dir::load_workspace_database_config_profile_for;
 use crate::database::{DatabaseConfig, DatabaseEngine, DatabaseRole, DeploymentMode};
 use crate::error::ConfigError;
 use crate::postgres::{PgSslMode, PostgresConfig};
 use crate::sqlite::SqliteConfig;
 use crate::workspace_database::{
-    normalize_workspace_postgres_url, reject_retired_database_env, resolve_workspace_database_url,
+    normalize_workspace_postgres_url, reject_retired_database_env,
+    resolve_workspace_database_url_for,
 };
 
 /// Load one module's server database configuration from the workspace-scoped
@@ -47,7 +49,7 @@ fn load_from_env_with_role(
 }
 
 fn load_server_config(service_name: &str) -> Result<DatabaseConfig, ConfigError> {
-    let raw_url = resolve_workspace_database_url()?;
+    let raw_url = resolve_workspace_database_url_for(Some(service_name))?;
     let detected_engine = DatabaseEngine::from_url(&raw_url).ok_or_else(|| {
         ConfigError::InvalidUrl(format!("cannot detect database engine from URL: {raw_url}"))
     })?;
@@ -145,7 +147,17 @@ fn load_client_local_config() -> Result<DatabaseConfig, ConfigError> {
 }
 
 fn resolve_pool_settings() -> Result<(u32, u32, u64, u64, u64), ConfigError> {
-    let max_connections = get_env_as("SDKWORK_DATABASE_MAX_CONNECTIONS", 10_u32)?;
+    // The workspace database configuration directory profile (ENVIRONMENT_SPEC
+    // §7.3) may carry pool sizing; process env remains the late override.
+    let profile_max_connections = load_workspace_database_config_profile_for(None)
+        .ok()
+        .flatten()
+        .and_then(|profile| profile.max_connections)
+        .and_then(|value| value.parse::<u32>().ok());
+    let max_connections = get_env_as(
+        "SDKWORK_DATABASE_MAX_CONNECTIONS",
+        profile_max_connections.unwrap_or(10_u32),
+    )?;
     let min_connections = get_env_as("SDKWORK_DATABASE_MIN_CONNECTIONS", 1_u32)?;
     if min_connections > max_connections {
         return Err(ConfigError::InvalidConfig(format!(

@@ -45,3 +45,23 @@ sdkwork-database-config = { path = "../sdkwork-database-config" }
 sdkwork-database-lifecycle = { path = "../sdkwork-database-lifecycle", default-features = false }
 sdkwork-database-sqlx = { path = "../sdkwork-database-sqlx", default-features = false }
 sdkwork-database-spi = { path = "../sdkwork-database-spi" }
+
+[[test]]
+name = "constraint_drift"
+# SQLite-backed drift detection; skipped unless the sqlite feature is enabled.
+required-features = ["sqlite"]
+
+[[test]]
+name = "drift_smoke"
+# SQLite-backed drift smoke test; skipped unless the sqlite feature is enabled.
+required-features = ["sqlite"]
+
+[[test]]
+name = "nullability_drift"
+# SQLite-backed nullability drift detection; skipped unless sqlite is enabled.
+required-features = ["sqlite"]
+
+[[test]]
+name = "sqlite_metadata_drift"
+# SQLite metadata drift detection; skipped unless sqlite is enabled.
+required-features = ["sqlite"]

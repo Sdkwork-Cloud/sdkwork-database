@@ -291,7 +291,7 @@ macro_rules! impl_repository {
                     match &self.pool {
                         #[cfg(feature = "sqlite")]
                         sdkwork_database_sqlx::DatabasePool::Sqlite(pool, _) => {
-                            let mut query = sqlx::query(&sql);
+                            let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
                             let json = entity.to_json();
                             for col in columns {
                                 if let Some(val) = json.get(col) {
@@ -321,7 +321,7 @@ macro_rules! impl_repository {
                             query.execute(pool).await.map_err($crate::error::RepositoryError::Database)?;
                         }
                         sdkwork_database_sqlx::DatabasePool::Postgres(pool, _) => {
-                            let mut query = sqlx::query(&sql);
+                            let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
                             let json = entity.to_json();
                             for col in columns {
                                 if let Some(val) = json.get(col) {
@@ -369,7 +369,7 @@ macro_rules! impl_repository {
                     match &self.pool {
                         #[cfg(feature = "sqlite")]
                         sdkwork_database_sqlx::DatabasePool::Sqlite(pool, _) => {
-                            let row = sqlx::query(&sql)
+                            let row = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
                                 .bind(id)
                                 .fetch_optional(pool)
                                 .await
@@ -381,7 +381,7 @@ macro_rules! impl_repository {
                             }
                         }
                         sdkwork_database_sqlx::DatabasePool::Postgres(pool, _) => {
-                            let row = sqlx::query(&sql)
+                            let row = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
                                 .bind(id)
                                 .fetch_optional(pool)
                                 .await
@@ -409,7 +409,7 @@ macro_rules! impl_repository {
                     match &self.pool {
                         #[cfg(feature = "sqlite")]
                         sdkwork_database_sqlx::DatabasePool::Sqlite(pool, _) => {
-                            let mut q = sqlx::query(&sql);
+                            let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
                             for param in params {
                                 q = q.bind(param);
                             }
@@ -421,7 +421,7 @@ macro_rules! impl_repository {
                             Ok(entities)
                         }
                         sdkwork_database_sqlx::DatabasePool::Postgres(pool, _) => {
-                            let mut q = sqlx::query(&sql);
+                            let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
                             for param in params {
                                 q = q.bind(param);
                             }
@@ -462,7 +462,7 @@ macro_rules! impl_repository {
                     match &self.pool {
                         #[cfg(feature = "sqlite")]
                         sdkwork_database_sqlx::DatabasePool::Sqlite(pool, _) => {
-                            let mut query = sqlx::query(&sql);
+                            let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
                             let json = entity.to_json();
                             for col in columns {
                                 if *col != pk_col {
@@ -495,7 +495,7 @@ macro_rules! impl_repository {
                             query.execute(pool).await.map_err($crate::error::RepositoryError::Database)?;
                         }
                         sdkwork_database_sqlx::DatabasePool::Postgres(pool, _) => {
-                            let mut query = sqlx::query(&sql);
+                            let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
                             let json = entity.to_json();
                             for col in columns {
                                 if *col != pk_col {
@@ -546,14 +546,14 @@ macro_rules! impl_repository {
                     match &self.pool {
                         #[cfg(feature = "sqlite")]
                         sdkwork_database_sqlx::DatabasePool::Sqlite(pool, _) => {
-                            sqlx::query(&sql)
+                            sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
                                 .bind(id)
                                 .execute(pool)
                                 .await
                                 .map_err($crate::error::RepositoryError::Database)?;
                         }
                         sdkwork_database_sqlx::DatabasePool::Postgres(pool, _) => {
-                            sqlx::query(&sql)
+                            sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
                                 .bind(id)
                                 .execute(pool)
                                 .await
@@ -579,7 +579,7 @@ macro_rules! impl_repository {
                     match &self.pool {
                         #[cfg(feature = "sqlite")]
                         sdkwork_database_sqlx::DatabasePool::Sqlite(pool, _) => {
-                            let mut q = sqlx::query(&sql);
+                            let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
                             for param in params {
                                 q = q.bind(param);
                             }
@@ -588,7 +588,7 @@ macro_rules! impl_repository {
                             Ok(row.get::<i64, _>("count"))
                         }
                         sdkwork_database_sqlx::DatabasePool::Postgres(pool, _) => {
-                            let mut q = sqlx::query(&sql);
+                            let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
                             for param in params {
                                 q = q.bind(param);
                             }
