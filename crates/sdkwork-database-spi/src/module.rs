@@ -249,6 +249,7 @@ impl SeedProvider for DefaultDatabaseModule {
         }
 
         let seed_manifest = SeedManifest::from_file(self.seeds_dir().join("seed.manifest.json"))?;
+        seed_manifest.validate()?;
         seed_manifest.resolve_plan(&self.seeds_dir(), locale, profile)
     }
 }

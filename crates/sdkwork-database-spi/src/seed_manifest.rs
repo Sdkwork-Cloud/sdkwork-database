@@ -14,11 +14,30 @@ pub struct SeedManifest {
     pub kind: String,
     #[serde(default = "default_seed_locale")]
     pub default_locale: String,
+    #[serde(default = "default_seed_locale")]
+    pub fallback_locale: String,
+    #[serde(default)]
+    pub i18n_version: Option<String>,
     pub profiles: HashMap<String, SeedProfileDefinition>,
     #[serde(default)]
     pub supported_locales: Vec<String>,
     #[serde(default)]
     pub active_locales: Vec<String>,
+    #[serde(default)]
+    pub locale_sets: HashMap<String, SeedLocaleSetDefinition>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SeedLocaleSetDefinition {
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub checksum: Option<String>,
+    #[serde(default)]
+    pub files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -70,6 +89,47 @@ impl SeedManifest {
             .map_err(|error| SpiError::Seed(format!("failed to read seed manifest: {error}")))?;
         serde_json::from_str(&content)
             .map_err(|error| SpiError::Seed(format!("invalid seed manifest json: {error}")))
+    }
+
+    /// Validates the locale/i18n contract required by I18N_SPEC:
+    /// fallback and active locales must be members of supportedLocales, and
+    /// every non-empty locale set must declare a checksum.
+    pub fn validate(&self) -> Result<(), SpiError> {
+        let supported: std::collections::HashSet<&str> =
+            self.supported_locales.iter().map(String::as_str).collect();
+        if !self.supported_locales.contains(&self.fallback_locale) {
+            return Err(SpiError::Seed(format!(
+                "seed manifest fallbackLocale {} is not a member of supportedLocales",
+                self.fallback_locale
+            )));
+        }
+        for locale in &self.active_locales {
+            if !supported.contains(locale.as_str()) {
+                return Err(SpiError::Seed(format!(
+                    "seed manifest activeLocales member {locale} is not a member of supportedLocales"
+                )));
+            }
+        }
+        for (locale, set) in &self.locale_sets {
+            if !supported.contains(locale.as_str()) {
+                return Err(SpiError::Seed(format!(
+                    "seed manifest localeSets key {locale} is not a member of supportedLocales"
+                )));
+            }
+            if set.required
+                && set
+                    .checksum
+                    .as_deref()
+                    .unwrap_or_default()
+                    .trim()
+                    .is_empty()
+            {
+                return Err(SpiError::Seed(format!(
+                    "seed manifest localeSets[{locale}] is required but declares no checksum"
+                )));
+            }
+        }
+        Ok(())
     }
 
     pub fn resolve_plan(
