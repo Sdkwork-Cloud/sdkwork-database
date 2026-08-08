@@ -164,16 +164,39 @@ fn canonical_not(tokens: &[String]) -> Vec<String> {
 }
 
 fn canonical_membership(left: &[String], values: &[&[String]]) -> Vec<String> {
-    let mut canonical = canonicalize_scalar_tokens(left);
+    let mut canonical = strip_scalar_cast(left).to_vec();
     canonical.extend(["in".to_string(), "(".to_string()]);
     for (index, value) in values.iter().enumerate() {
         if index > 0 {
             canonical.push(",".to_string());
         }
-        canonical.extend(canonicalize_scalar_tokens(value));
+        canonical.extend(strip_scalar_cast(value).to_vec());
     }
     canonical.push(")".to_string());
     canonical
+}
+
+// PostgreSQL normalizes column references and array elements in stored index
+// predicates to cast forms (`(status)::text`, `'PENDING'::character varying`).
+// Peel trailing `:: <type>` casts (recursively, for nested parenthesized
+// casts) so authored predicates match their stored normalization. Both the
+// column form (`<name> :: <type>`) and the literal form
+// (`<literal> :: <type> <modifier>`) end in a `::` cast.
+fn strip_scalar_cast(mut tokens: &[String]) -> &[String] {
+    loop {
+        let stripped = strip_outer_parentheses(tokens);
+        let tail_three = stripped.len() >= 4 && stripped[stripped.len() - 3] == "::";
+        let tail_two = stripped.len() >= 3 && stripped[stripped.len() - 2] == "::";
+        if tail_three {
+            tokens = &stripped[..stripped.len() - 3];
+            continue;
+        }
+        if tail_two {
+            tokens = &stripped[..stripped.len() - 2];
+            continue;
+        }
+        return stripped;
+    }
 }
 
 fn canonicalize_scalar_tokens(tokens: &[String]) -> Vec<String> {
@@ -197,7 +220,22 @@ fn parse_any_array(tokens: &[String]) -> Option<Vec<&[String]>> {
     if !outer_parentheses_wrap_all(arguments) {
         return None;
     }
-    let array = strip_outer_parentheses(&arguments[1..arguments.len() - 1]);
+    let mut array = &arguments[1..arguments.len() - 1];
+    // PostgreSQL normalizes `ANY (ARRAY[...])` literals in stored index
+    // predicates to `ANY ((ARRAY[...])::text[])` (or any other array type
+    // cast). Peel the trailing `:: <type> []` cast so both forms match the
+    // expected `ARRAY[...]` literal identically. The tokenizer emits the
+    // type suffix as a single `[]` token, so both shapes are accepted.
+    let single_array_token = array.last().is_some_and(|token| token == "[]");
+    let split_array_tokens = array.len() >= 2
+        && array[array.len() - 2] == "["
+        && array[array.len() - 1] == "]";
+    if single_array_token && array.len() >= 3 && array[array.len() - 3] == "::" {
+        array = &array[..array.len() - 3];
+    } else if split_array_tokens && array.len() >= 4 && array[array.len() - 4] == "::" {
+        array = &array[..array.len() - 4];
+    }
+    let array = strip_outer_parentheses(array);
     if array.first().map(String::as_str) != Some("array") {
         return None;
     }
@@ -666,6 +704,13 @@ mod tests {
             Some("status IN (0, 1, 2)"),
             Some("status = ANY (ARRAY[0, 1, 2])")
         ));
+        // PostgreSQL stores partial-index predicates with normalized array
+        // casts: `= ANY ((ARRAY[...])::text[])` must match the authored
+        // `IN (...)` form (sdkwork-webserver web_certificate_operation).
+        assert!(predicates_match(
+            Some("status IN ('PENDING', 'RUNNING')"),
+            Some("((status)::text = ANY ((ARRAY['PENDING'::character varying, 'RUNNING'::character varying])::text[]))")
+        ));
         assert!(predicates_match(
             Some("auto_renew = TRUE"),
             Some("auto_renew")
@@ -704,3 +749,4 @@ mod tests {
         ));
     }
 }
+

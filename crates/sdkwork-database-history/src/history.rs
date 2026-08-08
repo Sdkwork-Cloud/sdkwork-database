@@ -460,23 +460,85 @@ fn split_transaction_prelude(script: &str) -> (&str, &str) {
     let mut offset = 0;
     let mut begin_offset = None;
     let mut pragma_offset = None;
+    // Dollar-quote tracking: a bare `BEGIN` line inside a `DO $$ ... END $$`
+    // (or `$tag$ ... $tag$`) body must not be mistaken for the start of an
+    // explicit transaction — sdkwork-im's baseline opens with such a block,
+    // and truncating the script there produces an unterminated
+    // dollar-quoted-string error from PostgreSQL.
+    let mut dollar_tag: Option<String> = None;
 
     for segment in script.split_inclusive('\n') {
         let trimmed = segment.trim();
-        let upper = trimmed.to_ascii_uppercase();
-        if begin_offset.is_none()
-            && (upper == "BEGIN" || upper == "BEGIN;" || upper.starts_with("BEGIN IMMEDIATE"))
-        {
-            begin_offset = Some(offset);
+        if dollar_tag.is_none() {
+            let upper = trimmed.to_ascii_uppercase();
+            if begin_offset.is_none()
+                && (upper == "BEGIN" || upper == "BEGIN;" || upper.starts_with("BEGIN IMMEDIATE"))
+            {
+                begin_offset = Some(offset);
+            }
+            if begin_offset.is_none() && upper.starts_with("PRAGMA FOREIGN_KEYS") {
+                pragma_offset = Some(offset);
+            }
         }
-        if begin_offset.is_none() && upper.starts_with("PRAGMA FOREIGN_KEYS") {
-            pragma_offset = Some(offset);
-        }
+        dollar_tag = advance_dollar_quote_state(segment, dollar_tag);
         offset += segment.len();
     }
 
     let transaction_offset = pragma_offset.or(begin_offset).unwrap_or(0);
     script.split_at(transaction_offset)
+}
+
+/// Advance the dollar-quote scanner over one line of a script, returning the
+/// dollar tag still open after the line (None when not inside a dollar-quoted
+/// body). Single-quoted strings are skipped so `$` characters inside string
+/// literals are not treated as dollar-quote delimiters.
+fn advance_dollar_quote_state(line: &str, mut dollar_tag: Option<String>) -> Option<String> {
+    let bytes = line.as_bytes();
+    let mut index = 0;
+    let mut in_single_quote = false;
+    while index < bytes.len() {
+        let ch = bytes[index] as char;
+        if in_single_quote {
+            if ch == '\'' {
+                in_single_quote = false;
+            }
+            index += 1;
+            continue;
+        }
+        match dollar_tag.as_deref() {
+            None => {
+                if ch == '\'' {
+                    in_single_quote = true;
+                    index += 1;
+                } else if ch == '$' {
+                    let (tag, next) = read_dollar_tag(line, index);
+                    if tag.len() >= 2 && tag.ends_with('$') {
+                        dollar_tag = Some(tag);
+                        index = next;
+                    } else {
+                        index += 1;
+                    }
+                } else {
+                    index += 1;
+                }
+            }
+            Some(tag) => {
+                if ch == '\'' {
+                    in_single_quote = true;
+                    index += 1;
+                } else if ch == '$' {
+                    let (closing, next) = read_dollar_tag(line, index);
+                    index = next;
+                    if closing == tag {
+                        dollar_tag = None;
+                    }
+                } else {
+                    index += 1;
+                }
+            }
+        }
+    }
+    dollar_tag
 }
 
 fn script_has_explicit_transaction(script: &str) -> bool {
@@ -1556,6 +1618,22 @@ mod tests {
     fn splits_simple_statements() {
         let stmts = split_sql_statements("SELECT 1; SELECT 2;");
         assert_eq!(stmts, vec!["SELECT 1;", "SELECT 2;"]);
+    }
+
+    #[test]
+    fn transaction_prelude_skips_begin_inside_dollar_quoted_bodies() {
+        // sdkwork-im baseline: a `DO $$` block whose body starts with a bare
+        // `BEGIN` line must not be treated as the explicit transaction start.
+        let script = "CREATE TABLE t (id int);\nDO $$\nBEGIN\n    RAISE NOTICE 'x';\nEND $$;\nBEGIN;\nINSERT INTO t VALUES (1);\nCOMMIT;\n";
+        let (prelude, transactional) = split_transaction_prelude(script);
+        assert!(prelude.starts_with("CREATE TABLE t"), "prelude: {prelude}");
+        assert!(prelude.contains("DO $$"), "prelude keeps the DO block: {prelude}");
+        assert!(prelude.contains("END $$;"), "prelude keeps the DO block end: {prelude}");
+        assert!(
+            transactional.starts_with("BEGIN;"),
+            "transaction starts at the real BEGIN, got: {transactional}"
+        );
+        assert!(transactional.contains("COMMIT;"));
     }
 
     #[test]
