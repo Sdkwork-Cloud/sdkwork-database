@@ -74,10 +74,17 @@ fn load_server_config(service_name: &str) -> Result<DatabaseConfig, ConfigError>
         DatabaseEngine::Postgres => DeploymentMode::Integrated,
         DatabaseEngine::Sqlite => DeploymentMode::Standalone,
     };
-    let table_prefix = match mode {
+    let mut table_prefix = match mode {
         DeploymentMode::Integrated => format!("{}_", service_name.to_ascii_lowercase()),
         DeploymentMode::Standalone => String::new(),
     };
+    // Explicit override for shared/platform pools that must not namespace
+    // tables (for example the platform cloud gateway's process-shared pool,
+    // where every embedded module owns its literal table names). Unset keeps
+    // the derived prefix; an empty value removes it.
+    if let Ok(prefix) = std::env::var("SDKWORK_DATABASE_TABLE_PREFIX") {
+        table_prefix = prefix;
+    }
     let (
         max_connections,
         min_connections,
