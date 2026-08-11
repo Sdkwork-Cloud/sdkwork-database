@@ -1627,8 +1627,14 @@ mod tests {
         let script = "CREATE TABLE t (id int);\nDO $$\nBEGIN\n    RAISE NOTICE 'x';\nEND $$;\nBEGIN;\nINSERT INTO t VALUES (1);\nCOMMIT;\n";
         let (prelude, transactional) = split_transaction_prelude(script);
         assert!(prelude.starts_with("CREATE TABLE t"), "prelude: {prelude}");
-        assert!(prelude.contains("DO $$"), "prelude keeps the DO block: {prelude}");
-        assert!(prelude.contains("END $$;"), "prelude keeps the DO block end: {prelude}");
+        assert!(
+            prelude.contains("DO $$"),
+            "prelude keeps the DO block: {prelude}"
+        );
+        assert!(
+            prelude.contains("END $$;"),
+            "prelude keeps the DO block end: {prelude}"
+        );
         assert!(
             transactional.starts_with("BEGIN;"),
             "transaction starts at the real BEGIN, got: {transactional}"

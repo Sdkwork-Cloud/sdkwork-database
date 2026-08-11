@@ -227,9 +227,8 @@ fn parse_any_array(tokens: &[String]) -> Option<Vec<&[String]>> {
     // expected `ARRAY[...]` literal identically. The tokenizer emits the
     // type suffix as a single `[]` token, so both shapes are accepted.
     let single_array_token = array.last().is_some_and(|token| token == "[]");
-    let split_array_tokens = array.len() >= 2
-        && array[array.len() - 2] == "["
-        && array[array.len() - 1] == "]";
+    let split_array_tokens =
+        array.len() >= 2 && array[array.len() - 2] == "[" && array[array.len() - 1] == "]";
     if single_array_token && array.len() >= 3 && array[array.len() - 3] == "::" {
         array = &array[..array.len() - 3];
     } else if split_array_tokens && array.len() >= 4 && array[array.len() - 4] == "::" {
@@ -749,4 +748,3 @@ mod tests {
         ));
     }
 }
-
