@@ -13,7 +13,7 @@ serde.workspace = true
 serde_json.workspace = true
 serde_yaml = "0.9"
 thiserror.workspace = true
-sdkwork-database-config = { path = "../sdkwork-database-config" }
+sdkwork_database_config.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -23,6 +23,22 @@ license = "AGPL-3.0-or-later"
 repository = "https://github.com/sdkwork/sdkwork-database"
 
 [workspace.dependencies]
+sdkwork_database_ops = { path = "crates/sdkwork-database-ops", package = "sdkwork-database-ops" }
+
+sdkwork_database_history = { path = "crates/sdkwork-database-history", package = "sdkwork-database-history" }
+
+sdkwork_database_contract = { path = "crates/sdkwork-database-contract", package = "sdkwork-database-contract" }
+
+sdkwork_database_sqlx = { path = "crates/sdkwork-database-sqlx", package = "sdkwork-database-sqlx" }
+
+sdkwork_database_spi = { path = "crates/sdkwork-database-spi", package = "sdkwork-database-spi" }
+
+sdkwork_database_lifecycle = { path = "crates/sdkwork-database-lifecycle", package = "sdkwork-database-lifecycle" }
+
+sdkwork_database_drift = { path = "crates/sdkwork-database-drift", package = "sdkwork-database-drift" }
+
+sdkwork_database_config = { path = "crates/sdkwork-database-config", package = "sdkwork-database-config" }
+
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"

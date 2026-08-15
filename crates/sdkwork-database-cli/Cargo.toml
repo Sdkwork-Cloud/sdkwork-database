@@ -11,11 +11,11 @@ name = "sdkwork-db"
 path = "src/main.rs"
 
 [dependencies]
-sdkwork-database-config = { path = "../sdkwork-database-config" }
-sdkwork-database-drift = { path = "../sdkwork-database-drift" }
-sdkwork-database-lifecycle = { path = "../sdkwork-database-lifecycle" }
-sdkwork-database-spi = { path = "../sdkwork-database-spi" }
-sdkwork-database-sqlx = { path = "../sdkwork-database-sqlx" }
+sdkwork_database_config.workspace = true
+sdkwork_database_drift.workspace = true
+sdkwork_database_lifecycle.workspace = true
+sdkwork_database_spi.workspace = true
+sdkwork_database_sqlx.workspace = true
 
 anyhow.workspace = true
 clap = { version = "4", features = ["derive", "env"] }

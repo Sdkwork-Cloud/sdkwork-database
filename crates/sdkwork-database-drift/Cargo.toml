@@ -10,24 +10,24 @@ description = "SDKWork database schema drift detection"
 default = ["postgres"]
 postgres = [
     "sqlx/postgres",
-    "sdkwork-database-sqlx/postgres",
-    "sdkwork-database-history/postgres",
-    "sdkwork-database-lifecycle/postgres",
+    "sdkwork_database_sqlx/postgres",
+    "sdkwork_database_history/postgres",
+    "sdkwork_database_lifecycle/postgres",
 ]
 sqlite = [
     "postgres",
     "sqlx/sqlite",
-    "sdkwork-database-sqlx/sqlite",
-    "sdkwork-database-history/sqlite",
-    "sdkwork-database-lifecycle/sqlite",
+    "sdkwork_database_sqlx/sqlite",
+    "sdkwork_database_history/sqlite",
+    "sdkwork_database_lifecycle/sqlite",
 ]
 
 [dependencies]
-sdkwork-database-config = { path = "../sdkwork-database-config" }
-sdkwork-database-contract = { path = "../sdkwork-database-contract" }
-sdkwork-database-history = { path = "../sdkwork-database-history", default-features = false }
-sdkwork-database-sqlx = { path = "../sdkwork-database-sqlx", default-features = false }
-sdkwork-database-spi = { path = "../sdkwork-database-spi" }
+sdkwork_database_config.workspace = true
+sdkwork_database_contract.workspace = true
+sdkwork_database_history.workspace = true
+sdkwork_database_sqlx.workspace = true
+sdkwork_database_spi.workspace = true
 
 async-trait.workspace = true
 chrono.workspace = true
@@ -41,10 +41,10 @@ tokio.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 url.workspace = true
-sdkwork-database-config = { path = "../sdkwork-database-config" }
-sdkwork-database-lifecycle = { path = "../sdkwork-database-lifecycle", default-features = false }
-sdkwork-database-sqlx = { path = "../sdkwork-database-sqlx", default-features = false }
-sdkwork-database-spi = { path = "../sdkwork-database-spi" }
+sdkwork_database_config.workspace = true
+sdkwork_database_lifecycle.workspace = true
+sdkwork_database_sqlx.workspace = true
+sdkwork_database_spi.workspace = true
 
 [[test]]
 name = "constraint_drift"

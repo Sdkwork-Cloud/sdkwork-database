@@ -9,8 +9,8 @@ description = "Database-backed Snowflake node_id allocation and unified ID gener
 
 [features]
 default = ["postgres"]
-postgres = ["sqlx/postgres", "sdkwork-database-sqlx/postgres"]
-sqlite = ["sqlx/sqlite", "sdkwork-database-sqlx/sqlite"]
+postgres = ["sqlx/postgres", "sdkwork_database_sqlx/postgres"]
+sqlite = ["sqlx/sqlite", "sdkwork_database_sqlx/sqlite"]
 
 [lib]
 name = "sdkwork_database_id"
@@ -18,8 +18,8 @@ path = "src/lib.rs"
 
 [dependencies]
 sdkwork-id-core = { workspace = true }
-sdkwork-database-config = { path = "../sdkwork-database-config" }
-sdkwork-database-sqlx = { path = "../sdkwork-database-sqlx", default-features = false }
+sdkwork_database_config.workspace = true
+sdkwork_database_sqlx.workspace = true
 
 # Async runtime
 tokio = { workspace = true }

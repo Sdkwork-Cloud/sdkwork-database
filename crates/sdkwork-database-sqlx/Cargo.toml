@@ -14,7 +14,7 @@ sqlite = ["sqlx/sqlite", "dep:libsqlite3-sys"]
 any = ["sqlx/any"]
 
 [dependencies]
-sdkwork-database-config = { path = "../sdkwork-database-config" }
+sdkwork_database_config.workspace = true
 
 # Async runtime
 tokio = { workspace = true }

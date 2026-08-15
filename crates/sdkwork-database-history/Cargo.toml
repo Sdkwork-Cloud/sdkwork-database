@@ -8,12 +8,12 @@ description = "SDKWork database ops history tables and queries"
 
 [features]
 default = ["postgres"]
-postgres = ["sqlx/postgres", "sdkwork-database-sqlx/postgres"]
-sqlite = ["sqlx/sqlite", "sdkwork-database-sqlx/sqlite"]
+postgres = ["sqlx/postgres", "sdkwork_database_sqlx/postgres"]
+sqlite = ["sqlx/sqlite", "sdkwork_database_sqlx/sqlite"]
 
 [dependencies]
-sdkwork-database-config = { path = "../sdkwork-database-config" }
-sdkwork-database-sqlx = { path = "../sdkwork-database-sqlx", default-features = false }
+sdkwork_database_config.workspace = true
+sdkwork_database_sqlx.workspace = true
 
 hex = "0.4"
 sha2 = "0.10"

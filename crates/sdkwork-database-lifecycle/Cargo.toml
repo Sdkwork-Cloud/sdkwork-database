@@ -10,20 +10,20 @@ description = "SDKWork database lifecycle orchestration: migrate, seed, bootstra
 default = ["postgres"]
 postgres = [
     "sqlx/postgres",
-    "sdkwork-database-sqlx/postgres",
-    "sdkwork-database-history/postgres",
+    "sdkwork_database_sqlx/postgres",
+    "sdkwork_database_history/postgres",
 ]
 sqlite = [
     "sqlx/sqlite",
-    "sdkwork-database-sqlx/sqlite",
-    "sdkwork-database-history/sqlite",
+    "sdkwork_database_sqlx/sqlite",
+    "sdkwork_database_history/sqlite",
 ]
 
 [dependencies]
-sdkwork-database-config = { path = "../sdkwork-database-config" }
-sdkwork-database-history = { path = "../sdkwork-database-history", default-features = false }
-sdkwork-database-sqlx = { path = "../sdkwork-database-sqlx", default-features = false }
-sdkwork-database-spi = { path = "../sdkwork-database-spi" }
+sdkwork_database_config.workspace = true
+sdkwork_database_history.workspace = true
+sdkwork_database_sqlx.workspace = true
+sdkwork_database_spi.workspace = true
 
 async-trait.workspace = true
 serde.workspace = true
@@ -37,8 +37,8 @@ sqlx.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 url.workspace = true
-sdkwork-database-config = { path = "../sdkwork-database-config" }
-sdkwork-database-sqlx = { path = "../sdkwork-database-sqlx", default-features = false }
+sdkwork_database_config.workspace = true
+sdkwork_database_sqlx.workspace = true
 
 [[test]]
 name = "migrate_seed_smoke"

@@ -11,19 +11,19 @@ description = "Unified repository pattern abstraction for SDKWork database opera
 default = ["postgres"]
 postgres = [
     "sqlx/postgres",
-    "sdkwork-database-sqlx/postgres",
+    "sdkwork_database_sqlx/postgres",
     "sdkwork-database-id/postgres",
 ]
 sqlite = [
     "postgres",
     "sqlx/sqlite",
-    "sdkwork-database-sqlx/sqlite",
+    "sdkwork_database_sqlx/sqlite",
     "sdkwork-database-id/sqlite",
 ]
 
 [dependencies]
-sdkwork-database-config = { path = "../sdkwork-database-config" }
-sdkwork-database-sqlx = { path = "../sdkwork-database-sqlx", default-features = false }
+sdkwork_database_config.workspace = true
+sdkwork_database_sqlx.workspace = true
 sdkwork-database-id = { workspace = true, default-features = false }
 
 # Async runtime
