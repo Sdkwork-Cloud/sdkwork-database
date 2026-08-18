@@ -392,6 +392,25 @@ pub async fn create_pool_from_env(service_name: &str) -> Result<Option<DatabaseP
     Ok(Some(pool))
 }
 
+/// Create the process-shared PostgreSQL pool from environment variables.
+///
+/// Embedded platform hosts install one shared pool for every module. Module
+/// migrations own literal table names, so the derived service-code prefix is
+/// cleared before pool creation.
+pub async fn create_process_shared_pool_from_env(
+    service_name: &str,
+) -> Result<Option<DatabasePool>, PoolError> {
+    let mut config = match DatabaseConfig::from_env(service_name) {
+        Ok(config) => config,
+        Err(sdkwork_database_config::ConfigError::MissingRequired(_)) => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    config.table_prefix.clear();
+
+    let pool = crate::builder::PoolBuilder::new(config).build().await?;
+    Ok(Some(pool))
+}
+
 /// Create a database pool from a configuration.
 pub async fn create_pool_from_config(config: DatabaseConfig) -> Result<DatabasePool, PoolError> {
     crate::builder::PoolBuilder::new(config).build().await
