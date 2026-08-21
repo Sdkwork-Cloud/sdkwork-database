@@ -442,22 +442,33 @@ pub async fn introspect_table_constraint_details(
         DatabasePool::Postgres(pg_pool, _) => {
             let schema = postgres_application_schema(pool).await?;
             let rows = sqlx::query_as::<_, (String, String, String, Option<String>)>(
-                "SELECT constraint_info.table_name, \
-                        constraint_info.constraint_name, \
-                        constraint_info.constraint_type, \
-                        key_column.column_name \
-                 FROM information_schema.table_constraints AS constraint_info \
-                 LEFT JOIN information_schema.key_column_usage AS key_column \
-                   ON key_column.constraint_catalog = constraint_info.constraint_catalog \
-                  AND key_column.constraint_schema = constraint_info.constraint_schema \
-                  AND key_column.constraint_name = constraint_info.constraint_name \
-                  AND key_column.table_schema = constraint_info.table_schema \
-                  AND key_column.table_name = constraint_info.table_name \
-                 WHERE constraint_info.table_schema = $1 \
-                   AND constraint_info.constraint_type IN \
-                       ('PRIMARY KEY', 'UNIQUE', 'FOREIGN KEY', 'CHECK') \
-                 ORDER BY constraint_info.table_name, constraint_info.constraint_name, \
-                          key_column.ordinal_position",
+                "SELECT relation.relname, \
+                        constraint_definition.conname, \
+                        CASE constraint_definition.contype \
+                            WHEN 'p' THEN 'PRIMARY KEY' \
+                            WHEN 'u' THEN 'UNIQUE' \
+                            WHEN 'f' THEN 'FOREIGN KEY' \
+                            WHEN 'c' THEN 'CHECK' \
+                            WHEN 'n' THEN 'CHECK' \
+                        END, \
+                        attribute.attname \
+                 FROM pg_constraint AS constraint_definition \
+                 JOIN pg_class AS relation \
+                   ON relation.oid = constraint_definition.conrelid \
+                 JOIN pg_namespace AS namespace \
+                   ON namespace.oid = relation.relnamespace \
+                 LEFT JOIN LATERAL unnest(constraint_definition.conkey) \
+                        WITH ORDINALITY AS key_column(attnum, ordinal) \
+                   ON constraint_definition.contype IN ('p', 'u', 'f') \
+                 LEFT JOIN pg_attribute AS attribute \
+                   ON attribute.attrelid = relation.oid \
+                  AND attribute.attnum = key_column.attnum \
+                  AND NOT attribute.attisdropped \
+                 WHERE namespace.nspname = $1 \
+                   AND relation.relkind IN ('r', 'p') \
+                   AND constraint_definition.contype IN ('p', 'u', 'f', 'c', 'n') \
+                 ORDER BY relation.relname, constraint_definition.conname, \
+                          key_column.ordinal",
             )
             .bind(&schema)
             .fetch_all(pg_pool)

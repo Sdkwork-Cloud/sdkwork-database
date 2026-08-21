@@ -74,7 +74,7 @@ fn load_server_config(service_name: &str) -> Result<DatabaseConfig, ConfigError>
         DatabaseEngine::Postgres => DeploymentMode::Integrated,
         DatabaseEngine::Sqlite => DeploymentMode::Standalone,
     };
-    let mut table_prefix = match mode {
+    let table_prefix = match mode {
         DeploymentMode::Integrated => format!("{}_", service_name.to_ascii_lowercase()),
         DeploymentMode::Standalone => String::new(),
     };
